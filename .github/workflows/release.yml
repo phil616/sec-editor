@@ -1,0 +1,87 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Windows x64 release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate tag against project version
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_version="$(sed -nE \
+            's/^project\(SafeEditor VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES CXX\)$/\1/p' \
+            CMakeLists.txt)"
+          if [[ -z "${project_version}" ]]; then
+            echo "Unable to read the project version from CMakeLists.txt." >&2
+            exit 1
+          fi
+          expected_tag="v${project_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${expected_tag}." >&2
+            exit 1
+          fi
+
+      - name: Install Windows cross-compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build mingw-w64
+
+      - name: Build Windows release
+        shell: bash
+        run: ./scripts/build-windows.sh
+
+      - name: Package release assets
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="安全编辑器-${GITHUB_REF_NAME}-windows-x64.zip"
+          checksum="${archive}.sha256"
+          (
+            cd dist
+            cmake -E tar cf "${archive}" --format=zip -- \
+              "安全编辑器.exe" README.md SECURITY.md
+            sha256sum "${archive}" > "${checksum}"
+          )
+          echo "archive=dist/${archive}" >> "${GITHUB_OUTPUT}"
+          echo "checksum=dist/${checksum}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          assets=(
+            "${{ steps.package.outputs.archive }}"
+            "${{ steps.package.outputs.checksum }}"
+          )
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "安全编辑器 ${tag}"
+          fi

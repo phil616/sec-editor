@@ -1,0 +1,4 @@
+#include <windows.h>
+
+1 ICON "safe-editor.ico"
+1 RT_MANIFEST "SafeEditor.manifest"

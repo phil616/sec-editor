@@ -1,0 +1,4 @@
+/home/phil616/workspace/mempad/build-windows/CMakeFiles/mempad_core.dir
+/home/phil616/workspace/mempad/build-windows/CMakeFiles/SafeEditor.dir
+/home/phil616/workspace/mempad/build-windows/CMakeFiles/edit_cache.dir
+/home/phil616/workspace/mempad/build-windows/CMakeFiles/rebuild_cache.dir
