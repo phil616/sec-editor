@@ -31,6 +31,9 @@ public:
     void key_down(WPARAM key, bool shift, bool control) noexcept;
     void character(char16_t value) noexcept;
     void copy_selection_to_clipboard() noexcept;
+    void cut_selection_to_clipboard() noexcept;
+    void paste_from_clipboard() noexcept;
+    void select_all() noexcept;
     void mouse_down(int x, int y, bool shift) noexcept;
     void mouse_move(int x, int y, bool left_button) noexcept;
     void mouse_up() noexcept;
@@ -61,6 +64,7 @@ private:
     void ensure_caret_visible() noexcept;
     void move_to(std::size_t position, bool extend) noexcept;
     void move_vertical(int line_delta, bool extend) noexcept;
+    bool copy_selection_to_clipboard_impl() noexcept;
     void delete_selection() noexcept;
     void insert_text(std::span<const char16_t> text) noexcept;
     std::size_t point_to_position(int x, int y) noexcept;

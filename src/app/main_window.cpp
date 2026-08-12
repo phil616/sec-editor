@@ -17,7 +17,6 @@ namespace mempad::app {
 namespace {
 constexpr wchar_t class_name[] = L"SafeEditorMainWindow";
 constexpr UINT editor_changed = WM_APP + 1U;
-constexpr UINT security_menu_position = 3U;
 
 bool system_uses_dark_theme() noexcept {
     HIGHCONTRASTW high_contrast{};
@@ -130,7 +129,11 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file_menu, MF_STRING, command_exit, L"退出(&X)");
 
-    AppendMenuW(edit_menu, MF_STRING, command_copy, L"复制(&C)\tCtrl+C");
+    AppendMenuW(edit_menu, MF_STRING, command_cut, L"剪切选中(&T)\tCtrl+X");
+    AppendMenuW(edit_menu, MF_STRING, command_copy, L"复制选中(&C)\tCtrl+C");
+    AppendMenuW(edit_menu, MF_STRING, command_paste, L"粘贴(&P)\tCtrl+V");
+    AppendMenuW(edit_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(edit_menu, MF_STRING, command_select_all, L"全选(&A)\tCtrl+A");
 
     AppendMenuW(tab_menu_, MF_STRING, command_tab_literal,
                 L"插入制表符（\\t，显示宽度 4）");
@@ -178,6 +181,10 @@ LRESULT MainWindow::dispatch(const UINT message, const WPARAM wparam,
         editor_.character(static_cast<char16_t>(wparam)); return 0;
     case WM_COPY:
         editor_.copy_selection_to_clipboard(); return 0;
+    case WM_CUT:
+        editor_.cut_selection_to_clipboard(); return 0;
+    case WM_PASTE:
+        editor_.paste_from_clipboard(); return 0;
     case WM_PAINT:
         editor_.paint(); return 0;
     case WM_ERASEBKGND:
@@ -227,7 +234,9 @@ LRESULT MainWindow::dispatch(const UINT message, const WPARAM wparam,
     case editor_changed:
         update_title(); return 0;
     case WM_CLOSE:
-        if (confirm_close_document()) DestroyWindow(window_);
+        if (confirm_close_document() != CloseDecision::cancelled) {
+            DestroyWindow(window_);
+        }
         return 0;
     case WM_QUERYENDSESSION:
         shutting_down_ = true;
@@ -269,7 +278,10 @@ void MainWindow::on_command(const unsigned command) noexcept {
     case command_save_as: (void)save(true); break;
     case command_close: close_document(); break;
     case command_exit: SendMessageW(window_, WM_CLOSE, 0, 0); break;
+    case command_cut: editor_.cut_selection_to_clipboard(); break;
     case command_copy: editor_.copy_selection_to_clipboard(); break;
+    case command_paste: editor_.paste_from_clipboard(); break;
+    case command_select_all: editor_.select_all(); break;
     case command_tab_literal:
         tab_mode_ = editor::TabMode::literal_tab;
         editor_.set_tab_mode(tab_mode_);
@@ -347,9 +359,16 @@ void MainWindow::update_security_menu() noexcept {
                 command_security_status, item_label);
     CheckMenuItem(security_menu_, command_security_status,
                   MF_BYCOMMAND | (safe ? MF_CHECKED : MF_UNCHECKED));
-    ModifyMenuW(menu_bar_, security_menu_position,
-                MF_BYPOSITION | MF_POPUP,
-                reinterpret_cast<UINT_PTR>(security_menu_), top_label);
+    const int menu_count = GetMenuItemCount(menu_bar_);
+    for (int position = 0; position < menu_count; ++position) {
+        if (GetSubMenu(menu_bar_, position) != security_menu_) continue;
+        MENUITEMINFOW item{};
+        item.cbSize = sizeof(item);
+        item.fMask = MIIM_STRING;
+        item.dwTypeData = const_cast<wchar_t*>(top_label);
+        (void)SetMenuItemInfoW(menu_bar_, static_cast<UINT>(position), TRUE, &item);
+        break;
+    }
     DrawMenuBar(window_);
 }
 
@@ -365,14 +384,31 @@ void MainWindow::show_about() noexcept {
         L"关于安全编辑器", MB_OK | MB_ICONINFORMATION);
 }
 
-bool MainWindow::confirm_close_document() noexcept {
-    if (!document_.open() || !document_.dirty() || shutting_down_) return true;
+MainWindow::CloseDecision MainWindow::confirm_close_document() noexcept {
+    if (!document_.open() || !document_.dirty() || shutting_down_) {
+        return CloseDecision::proceed;
+    }
     const int answer = MessageBoxW(window_,
-        L"The document has unsaved changes. Save them before closing?",
+        L"文档有未保存的修改。是否先保存？",
         L"安全编辑器", MB_YESNOCANCEL | MB_ICONWARNING);
-    if (answer == IDCANCEL) return false;
-    if (answer == IDYES) return save(false);
-    return true;
+    if (answer == IDCANCEL) return CloseDecision::cancelled;
+    if (answer == IDYES) {
+        return save(false) ? CloseDecision::proceed : CloseDecision::cancelled;
+    }
+    return answer == IDNO ? CloseDecision::discard : CloseDecision::cancelled;
+}
+
+bool MainWindow::reset_document_for_open() noexcept {
+    document_.close();
+    const bool created = document_.create_empty();
+    editor_.document_changed();
+    update_security_menu();
+    update_title();
+    if (!created) {
+        MessageBoxW(window_, L"无法重新初始化安全文档内存。",
+                    L"安全编辑器", MB_OK | MB_ICONERROR);
+    }
+    return created;
 }
 
 bool MainWindow::save(const bool save_as) noexcept {
@@ -400,10 +436,12 @@ bool MainWindow::save(const bool save_as) noexcept {
 }
 
 void MainWindow::open_dialog() noexcept {
-    if (!confirm_close_document()) return;
+    const CloseDecision decision = confirm_close_document();
+    if (decision == CloseDecision::cancelled) return;
+    if (decision == CloseDecision::discard && !reset_document_for_open()) return;
     std::wstring path;
     const io::DialogResult result = io::choose_open_file(window_, path);
-    if (result == io::DialogResult::selected) open_path(path);
+    if (result == io::DialogResult::selected) load_path(path);
     else if (result == io::DialogResult::failed) {
         MessageBoxW(window_, L"The Open dialog could not be opened.",
                     L"安全编辑器", MB_OK | MB_ICONERROR);
@@ -411,9 +449,21 @@ void MainWindow::open_dialog() noexcept {
 }
 
 void MainWindow::open_path(const std::wstring& path) noexcept {
-    if (!confirm_close_document()) return;
+    const CloseDecision decision = confirm_close_document();
+    if (decision == CloseDecision::cancelled) return;
+    if (decision == CloseDecision::discard && !reset_document_for_open()) return;
+    load_path(path);
+}
+
+void MainWindow::load_path(const std::wstring& path) noexcept {
     io::Error error{};
     if (!io::read_document(path, document_, error)) {
+        if (!document_.open()) {
+            (void)document_.create_empty();
+            editor_.document_changed();
+            update_security_menu();
+            update_title();
+        }
         show_io_error(L"Open failed", error);
         return;
     }
@@ -423,7 +473,7 @@ void MainWindow::open_path(const std::wstring& path) noexcept {
 }
 
 void MainWindow::close_document() noexcept {
-    if (!confirm_close_document()) return;
+    if (confirm_close_document() == CloseDecision::cancelled) return;
     document_.close();
     editor_.document_changed();
     update_security_menu();

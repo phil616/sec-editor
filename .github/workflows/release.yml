@@ -55,12 +55,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="安全编辑器-${GITHUB_REF_NAME}-windows-x64.zip"
+          archive="mempad-${GITHUB_REF_NAME}-windows-x64.zip"
           checksum="${archive}.sha256"
           (
             cd dist
             cmake -E tar cf "${archive}" --format=zip -- \
-              "安全编辑器.exe" README.md SECURITY.md
+              "mempad.exe" README.md SECURITY.md
             sha256sum "${archive}" > "${checksum}"
           )
           echo "archive=dist/${archive}" >> "${GITHUB_OUTPUT}"

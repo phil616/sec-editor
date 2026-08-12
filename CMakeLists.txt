@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SafeEditor VERSION 1.0.1 LANGUAGES CXX)
+project(SafeEditor VERSION 1.0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ set(MEMPAD_CORE_SOURCES
     src/encoding/encoding.cpp
     src/document/secure_gap_buffer.cpp
     src/document/secure_document.cpp
+    src/editor/clipboard_text.cpp
     src/editor/line_index.cpp
     src/editor/selection.cpp
 )
@@ -37,7 +38,7 @@ if(WIN32)
         src/io/file_dialog.cpp
         resources/SafeEditor.rc
     )
-    set_target_properties(SafeEditor PROPERTIES OUTPUT_NAME "安全编辑器")
+    set_target_properties(SafeEditor PROPERTIES OUTPUT_NAME "mempad")
     target_include_directories(SafeEditor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(SafeEditor PRIVATE
         UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN
@@ -59,6 +60,7 @@ else()
     enable_testing()
     add_executable(mempad_tests
         tests/test_main.cpp
+        tests/clipboard_text_tests.cpp
         tests/encoding_tests.cpp
         tests/gap_buffer_tests.cpp
         tests/document_tests.cpp

@@ -5,6 +5,7 @@
 int main() {
     CHECK(mempad::security::WerGuard::initialize());
     run_encoding_tests();
+    run_clipboard_text_tests();
     run_gap_buffer_tests();
     run_document_tests();
     run_roundtrip_tests();

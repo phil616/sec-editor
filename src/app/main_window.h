@@ -23,6 +23,12 @@ private:
         system,
     };
 
+    enum class CloseDecision {
+        cancelled,
+        proceed,
+        discard,
+    };
+
     static LRESULT CALLBACK window_proc(HWND window, UINT message,
                                        WPARAM wparam, LPARAM lparam) noexcept;
     LRESULT dispatch(UINT message, WPARAM wparam, LPARAM lparam) noexcept;
@@ -33,10 +39,12 @@ private:
     void update_menu_checks() noexcept;
     void update_security_menu() noexcept;
     void show_about() noexcept;
-    bool confirm_close_document() noexcept;
+    CloseDecision confirm_close_document() noexcept;
+    bool reset_document_for_open() noexcept;
     bool save(bool save_as) noexcept;
     void open_dialog() noexcept;
     void open_path(const std::wstring& path) noexcept;
+    void load_path(const std::wstring& path) noexcept;
     void close_document() noexcept;
     void fail_closed(const wchar_t* reason) noexcept;
     void show_pending_clear_notice() noexcept;

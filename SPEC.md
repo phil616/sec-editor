@@ -8,6 +8,8 @@
 
 复制路径：选区从 Gap Buffer 直接写入 Win32 `CF_UNICODETEXT` 所需的 `HGLOBAL`，内部 LF 转为 Windows CRLF，不建立普通堆正文字符串。`SetClipboardData` 成功后内存归 Windows 所有，超出现有安全内存模型；失败时尽力清零仍由应用持有的传输内存。
 
+粘贴路径：Windows `CF_UNICODETEXT` → 有界 NUL 扫描与 UTF-16 校验 → CRLF/CR 规范化 → 临时 `SecureAllocation` → `SecureDocument::replace`。剪切仅在复制成功后删除选区。粘贴正文不进入普通堆，临时安全内存在返回时清零释放。
+
 绘制路径：只把当前可见行的一部分复制到 64 KiB 安全 scratch，以 `GetTextExtentPoint32W` 测量 CJK、代理对和 Tab 的实际像素宽度，调用 `ExtTextOutW` 后立即清零已用范围。不建立完整文档字符串或离屏正文 bitmap。编辑区禁止背景擦除并按行覆盖，避免“先清空、后绘字”导致的频闪。
 
 横向滚动使用像素坐标。布局只缓存每 8192 个 UTF-16 单元的文档偏移与累计像素宽度；命中测试在相邻检查点之间二分查找，不在普通内存中缓存正文。滚动范围、光标、选区和鼠标命中共享同一套测量结果。

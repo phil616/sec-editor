@@ -1,5 +1,6 @@
 #include "editor/editor_control.h"
 
+#include "editor/clipboard_text.h"
 #include "encoding/encoding.h"
 #include "security/process_guard.h"
 
@@ -13,6 +14,93 @@ namespace mempad::editor {
 static_assert(sizeof(wchar_t) == sizeof(char16_t));
 namespace {
 constexpr UINT change_message = WM_APP + 1U;
+
+class ClipboardSession final {
+public:
+    explicit ClipboardSession(HWND owner) noexcept
+        : open_(OpenClipboard(owner) != FALSE) {}
+    ~ClipboardSession() { if (open_) CloseClipboard(); }
+    bool open() const noexcept { return open_; }
+private:
+    bool open_ = false;
+};
+
+class GlobalMemoryLock final {
+public:
+    explicit GlobalMemoryLock(HGLOBAL memory) noexcept
+        : memory_(memory), pointer_(GlobalLock(memory)) {}
+    ~GlobalMemoryLock() { if (pointer_ != nullptr) GlobalUnlock(memory_); }
+    const wchar_t* text() const noexcept {
+        return static_cast<const wchar_t*>(pointer_);
+    }
+private:
+    HGLOBAL memory_ = nullptr;
+    void* pointer_ = nullptr;
+};
+
+bool read_clipboard_text(HWND owner, security::SecureAllocation& destination,
+                         std::size_t& units, const wchar_t*& error) noexcept {
+    units = 0;
+    error = nullptr;
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT) == FALSE) {
+        error = L"剪贴板中没有可粘贴的 Unicode 文本。";
+        return false;
+    }
+    ClipboardSession clipboard(owner);
+    if (!clipboard.open()) {
+        error = L"无法打开剪贴板。";
+        return false;
+    }
+    HGLOBAL memory = reinterpret_cast<HGLOBAL>(GetClipboardData(CF_UNICODETEXT));
+    if (memory == nullptr) {
+        error = L"无法读取剪贴板文本。";
+        return false;
+    }
+    const SIZE_T byte_count = GlobalSize(memory);
+    if (byte_count < sizeof(wchar_t)) {
+        error = L"剪贴板文本格式无效。";
+        return false;
+    }
+    GlobalMemoryLock locked(memory);
+    const wchar_t* source = locked.text();
+    if (source == nullptr) {
+        error = L"无法读取剪贴板文本。";
+        return false;
+    }
+    const std::size_t capacity = static_cast<std::size_t>(byte_count) /
+                                 sizeof(wchar_t);
+    constexpr std::size_t max_source_units =
+        document::SecureGapBuffer::max_units * 2U;
+    const std::size_t scan_limit = std::min(capacity, max_source_units + 1U);
+    std::size_t source_units = 0;
+    while (source_units < scan_limit && source[source_units] != L'\0') {
+        ++source_units;
+    }
+    if (source_units == scan_limit) {
+        error = L"剪贴板文本无效或超过文档安全限制。";
+        return false;
+    }
+    const std::span<const char16_t> input(
+        reinterpret_cast<const char16_t*>(source), source_units);
+    if (!clipboard_text_normalized_size(input, units) ||
+        units > document::SecureGapBuffer::max_units) {
+        error = L"剪贴板文本包含无效 Unicode 或超过文档安全限制。";
+        return false;
+    }
+    if (units == 0) return true;
+    const std::size_t bytes = units * sizeof(char16_t);
+    if (!destination.allocate(bytes)) {
+        error = L"无法为剪贴板文本分配安全内存。";
+        return false;
+    }
+    const std::span<char16_t> output(
+        reinterpret_cast<char16_t*>(destination.data()), units);
+    if (!normalize_clipboard_text(input, output)) {
+        error = L"无法规范化剪贴板文本。";
+        return false;
+    }
+    return true;
+}
 
 COLORREF editor_background(const bool dark) noexcept {
     return dark ? RGB(32, 32, 32) : GetSysColor(COLOR_WINDOW);
@@ -547,8 +635,8 @@ void EditorControl::insert_text(const std::span<const char16_t> text) noexcept {
     }
 }
 
-void EditorControl::copy_selection_to_clipboard() noexcept {
-    if (!document_.open() || selection_.empty()) return;
+bool EditorControl::copy_selection_to_clipboard_impl() noexcept {
+    if (!document_.open() || selection_.empty()) return false;
 
     const std::size_t begin = selection_.begin();
     const std::size_t end = selection_.end();
@@ -558,14 +646,14 @@ void EditorControl::copy_selection_to_clipboard() noexcept {
         if (output_units > std::numeric_limits<std::size_t>::max() - added) {
             MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                         MB_OK | MB_ICONERROR);
-            return;
+            return false;
         }
         output_units += added;
     }
     if (output_units > std::numeric_limits<std::size_t>::max() / sizeof(wchar_t)) {
         MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                     MB_OK | MB_ICONERROR);
-        return;
+        return false;
     }
 
     const std::size_t output_bytes = output_units * sizeof(wchar_t);
@@ -574,14 +662,14 @@ void EditorControl::copy_selection_to_clipboard() noexcept {
     if (clipboard_memory == nullptr) {
         MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                     MB_OK | MB_ICONERROR);
-        return;
+        return false;
     }
     auto* output = static_cast<wchar_t*>(GlobalLock(clipboard_memory));
     if (output == nullptr) {
         GlobalFree(clipboard_memory);
         MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                     MB_OK | MB_ICONERROR);
-        return;
+        return false;
     }
 
     std::size_t write = 0;
@@ -601,7 +689,7 @@ void EditorControl::copy_selection_to_clipboard() noexcept {
         }
         CloseClipboard();
     }
-    if (transferred) return;
+    if (transferred) return true;
 
     output = static_cast<wchar_t*>(GlobalLock(clipboard_memory));
     if (output != nullptr) {
@@ -611,19 +699,48 @@ void EditorControl::copy_selection_to_clipboard() noexcept {
     GlobalFree(clipboard_memory);
     MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                 MB_OK | MB_ICONERROR);
+    return false;
+}
+
+void EditorControl::copy_selection_to_clipboard() noexcept {
+    (void)copy_selection_to_clipboard_impl();
+}
+
+void EditorControl::cut_selection_to_clipboard() noexcept {
+    if (copy_selection_to_clipboard_impl()) delete_selection();
+}
+
+void EditorControl::paste_from_clipboard() noexcept {
+    if (!document_.open()) return;
+    security::SecureAllocation clipboard_text;
+    std::size_t units = 0;
+    const wchar_t* error = nullptr;
+    if (!read_clipboard_text(window_, clipboard_text, units, error)) {
+        MessageBoxW(window_, error, L"安全编辑器", MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (units == 0) return;
+    insert_text(std::span<const char16_t>(
+        reinterpret_cast<const char16_t*>(clipboard_text.data()), units));
+}
+
+void EditorControl::select_all() noexcept {
+    if (!document_.open()) return;
+    selection_.set(0, document_.text().size());
+    ensure_caret_visible();
 }
 
 void EditorControl::key_down(const WPARAM key, const bool shift,
                              const bool control) noexcept {
     if (!document_.open()) return;
-    if (control && key == 'C') {
-        copy_selection_to_clipboard();
-        return;
-    }
-    if (control && key == 'A') {
-        selection_.set(0, document_.text().size());
-        ensure_caret_visible();
-        return;
+    if (control) {
+        switch (key) {
+        case 'A': select_all(); return;
+        case 'C': copy_selection_to_clipboard(); return;
+        case 'V': paste_from_clipboard(); return;
+        case 'X': cut_selection_to_clipboard(); return;
+        default: break;
+        }
     }
     std::size_t target = selection_.caret();
     switch (key) {

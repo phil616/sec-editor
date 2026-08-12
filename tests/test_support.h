@@ -19,6 +19,7 @@ inline void check(const bool condition, const char* expression,
 #define CHECK(expression) ::mempad::tests::check((expression), #expression, __FILE__, __LINE__)
 
 void run_encoding_tests();
+void run_clipboard_text_tests();
 void run_gap_buffer_tests();
 void run_document_tests();
 void run_roundtrip_tests();

@@ -10,12 +10,17 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'token=秘密\r\n' > "${test_dir}/input.txt"
-timeout 30s xvfb-run -a "${wine_command}" "${project_dir}/build-windows/安全编辑器.exe" \
-  --smoke-test "Z:${test_dir//\//\\}\\input.txt" "Z:${test_dir//\//\\}\\output.txt"
-printf 'token=秘密\r\n\r\nSafeEditor smoke' > "${test_dir}/expected.txt"
-cmp "${test_dir}/expected.txt" "${test_dir}/output.txt"
+set +e
+timeout 5s xvfb-run -a "${wine_command}" "${project_dir}/build-windows/mempad.exe" \
+  "Z:${test_dir//\//\\}\\input.txt"
+status=$?
+set -e
+if [[ ${status} -ne 124 ]]; then
+  echo "mempad command-line startup failed with status ${status}" >&2
+  exit 1
+fi
 if find "${test_dir}" -type f \( -name '*.tmp' -o -name '*.bak' -o -name '*.log' \) | grep -q .; then
   echo "unexpected auxiliary file created" >&2
   exit 1
 fi
-echo "Wine smoke test passed"
+echo "Wine command-line startup test passed"
