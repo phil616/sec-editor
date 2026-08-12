@@ -17,6 +17,9 @@ namespace mempad::app {
 namespace {
 constexpr wchar_t class_name[] = L"SafeEditorMainWindow";
 constexpr UINT editor_changed = WM_APP + 1U;
+// WDA_EXCLUDEFROMCAPTURE is available in newer SDK headers, but the documented
+// value is also accepted by older supported Windows 10 releases as WDA_MONITOR.
+constexpr DWORD screen_capture_exclusion_affinity = 0x00000011U;
 
 bool system_uses_dark_theme() noexcept {
     HIGHCONTRASTW high_contrast{};
@@ -145,6 +148,11 @@ bool MainWindow::create_menu_bar() noexcept {
 
     AppendMenuW(security_menu_, MF_STRING | MF_GRAYED,
                 command_security_status, L"当前文档：正在检查");
+    AppendMenuW(security_menu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(security_menu_, MF_STRING, command_screen_capture_protection,
+                L"阻止屏幕捕获(&P)");
+    AppendMenuW(security_menu_, MF_STRING | MF_GRAYED, 0,
+                L"仅在本次运行中生效，默认关闭");
     AppendMenuW(security_menu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(security_menu_, MF_STRING | MF_GRAYED, 0,
                 L"正文内存使用 VirtualLock 并排除 WER");
@@ -307,6 +315,9 @@ void MainWindow::on_command(const unsigned command) noexcept {
         update_menu_checks();
         apply_theme();
         break;
+    case command_screen_capture_protection:
+        toggle_screen_capture_protection();
+        break;
     case command_about: show_about(); break;
     case command_security_status: break;
     default: break;
@@ -341,6 +352,11 @@ void MainWindow::update_menu_checks() noexcept {
         CheckMenuRadioItem(theme_menu_, command_theme_light, command_theme_system,
                            selected, MF_BYCOMMAND);
     }
+    if (security_menu_ != nullptr) {
+        CheckMenuItem(security_menu_, command_screen_capture_protection,
+                      MF_BYCOMMAND | (screen_capture_protection_enabled_
+                          ? MF_CHECKED : MF_UNCHECKED));
+    }
     if (window_ != nullptr) DrawMenuBar(window_);
 }
 
@@ -370,6 +386,32 @@ void MainWindow::update_security_menu() noexcept {
         break;
     }
     DrawMenuBar(window_);
+}
+
+void MainWindow::toggle_screen_capture_protection() noexcept {
+    const bool enable = !screen_capture_protection_enabled_;
+    const DWORD affinity = enable ? screen_capture_exclusion_affinity : WDA_NONE;
+    SetLastError(ERROR_SUCCESS);
+    if (SetWindowDisplayAffinity(window_, affinity) == FALSE) {
+        const DWORD error = GetLastError();
+        wchar_t system_message[192]{};
+        if (error != ERROR_SUCCESS) {
+            (void)FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
+                                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                                 nullptr, error, 0, system_message,
+                                 static_cast<DWORD>(std::size(system_message)), nullptr);
+        }
+        wchar_t message[512]{};
+        std::swprintf(message, std::size(message),
+                      L"无法%ls屏幕捕获保护。当前设置未改变。\n\n"
+                      L"Windows 错误码：%lu\n%ls",
+                      enable ? L"启用" : L"关闭",
+                      static_cast<unsigned long>(error), system_message);
+        MessageBoxW(window_, message, L"安全编辑器", MB_OK | MB_ICONERROR);
+        return;
+    }
+    screen_capture_protection_enabled_ = enable;
+    update_menu_checks();
 }
 
 void MainWindow::show_about() noexcept {

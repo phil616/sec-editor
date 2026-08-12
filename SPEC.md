@@ -14,6 +14,8 @@
 
 横向滚动使用像素坐标。布局只缓存每 8192 个 UTF-16 单元的文档偏移与累计像素宽度；命中测试在相邻检查点之间二分查找，不在普通内存中缓存正文。滚动范围、光标、选区和鼠标命中共享同一套测量结果。
 
+屏幕捕获保护路径：用户菜单开关 → 主顶层窗口 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE/WDA_NONE)`。状态只保存在 `MainWindow` 当前实例中，每次启动默认关闭，不读取或写入任何配置；API 失败时保持原状态并报告不含正文的 Windows 错误码。
+
 ## 组件
 
 - `security/SecureAllocation`：保护页、锁页、WER 注册、崩溃清零槽位和可靠释放；

@@ -38,6 +38,7 @@ private:
     void apply_theme() noexcept;
     void update_menu_checks() noexcept;
     void update_security_menu() noexcept;
+    void toggle_screen_capture_protection() noexcept;
     void show_about() noexcept;
     CloseDecision confirm_close_document() noexcept;
     bool reset_document_for_open() noexcept;
@@ -62,6 +63,7 @@ private:
     std::wstring initial_path_{};
     ThemePreference theme_preference_ = ThemePreference::system;
     editor::TabMode tab_mode_ = editor::TabMode::literal_tab;
+    bool screen_capture_protection_enabled_ = false;
     bool title_dirty_ = false;
     bool cleared_for_system_event_ = false;
     bool shutting_down_ = false;

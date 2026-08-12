@@ -12,6 +12,7 @@ inline constexpr unsigned command_cut = 1007;
 inline constexpr unsigned command_paste = 1008;
 inline constexpr unsigned command_select_all = 1009;
 inline constexpr unsigned command_security_status = 1101;
+inline constexpr unsigned command_screen_capture_protection = 1102;
 inline constexpr unsigned command_tab_literal = 1201;
 inline constexpr unsigned command_tab_spaces = 1202;
 inline constexpr unsigned command_theme_light = 1301;
