@@ -30,6 +30,7 @@ public:
     void resize(int width, int height) noexcept;
     void key_down(WPARAM key, bool shift, bool control) noexcept;
     void character(char16_t value) noexcept;
+    void copy_selection_to_clipboard() noexcept;
     void mouse_down(int x, int y, bool shift) noexcept;
     void mouse_move(int x, int y, bool left_button) noexcept;
     void mouse_up() noexcept;

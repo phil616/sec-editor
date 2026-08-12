@@ -7,6 +7,7 @@ inline constexpr unsigned command_save = 1002;
 inline constexpr unsigned command_save_as = 1003;
 inline constexpr unsigned command_close = 1004;
 inline constexpr unsigned command_exit = 1005;
+inline constexpr unsigned command_copy = 1006;
 inline constexpr unsigned command_security_status = 1101;
 inline constexpr unsigned command_tab_literal = 1201;
 inline constexpr unsigned command_tab_spaces = 1202;

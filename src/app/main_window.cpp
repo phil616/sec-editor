@@ -103,14 +103,17 @@ bool MainWindow::on_create() noexcept {
 bool MainWindow::create_menu_bar() noexcept {
     menu_bar_ = CreateMenu();
     HMENU file_menu = CreatePopupMenu();
+    HMENU edit_menu = CreatePopupMenu();
     tab_menu_ = CreatePopupMenu();
     theme_menu_ = CreatePopupMenu();
     security_menu_ = CreatePopupMenu();
     HMENU help_menu = CreatePopupMenu();
-    if (menu_bar_ == nullptr || file_menu == nullptr || tab_menu_ == nullptr ||
+    if (menu_bar_ == nullptr || file_menu == nullptr || edit_menu == nullptr ||
+        tab_menu_ == nullptr ||
         theme_menu_ == nullptr || security_menu_ == nullptr || help_menu == nullptr) {
         if (menu_bar_ != nullptr) DestroyMenu(menu_bar_);
         if (file_menu != nullptr) DestroyMenu(file_menu);
+        if (edit_menu != nullptr) DestroyMenu(edit_menu);
         if (tab_menu_ != nullptr) DestroyMenu(tab_menu_);
         if (theme_menu_ != nullptr) DestroyMenu(theme_menu_);
         if (security_menu_ != nullptr) DestroyMenu(security_menu_);
@@ -126,6 +129,8 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(file_menu, MF_STRING, command_close, L"关闭文档(&C)");
     AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file_menu, MF_STRING, command_exit, L"退出(&X)");
+
+    AppendMenuW(edit_menu, MF_STRING, command_copy, L"复制(&C)\tCtrl+C");
 
     AppendMenuW(tab_menu_, MF_STRING, command_tab_literal,
                 L"插入制表符（\\t，显示宽度 4）");
@@ -144,6 +149,7 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(help_menu, MF_STRING, command_about, L"关于安全编辑器(&A)...");
 
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(file_menu), L"文件(&F)");
+    AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(edit_menu), L"编辑(&E)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(tab_menu_), L"Tab(&T)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu_), L"主题(&V)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(security_menu_),
@@ -170,6 +176,8 @@ LRESULT MainWindow::dispatch(const UINT message, const WPARAM wparam,
     }
     case WM_CHAR:
         editor_.character(static_cast<char16_t>(wparam)); return 0;
+    case WM_COPY:
+        editor_.copy_selection_to_clipboard(); return 0;
     case WM_PAINT:
         editor_.paint(); return 0;
     case WM_ERASEBKGND:
@@ -261,6 +269,7 @@ void MainWindow::on_command(const unsigned command) noexcept {
     case command_save_as: (void)save(true); break;
     case command_close: close_document(); break;
     case command_exit: SendMessageW(window_, WM_CLOSE, 0, 0); break;
+    case command_copy: editor_.copy_selection_to_clipboard(); break;
     case command_tab_literal:
         tab_mode_ = editor::TabMode::literal_tab;
         editor_.set_tab_mode(tab_mode_);

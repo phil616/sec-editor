@@ -547,9 +547,79 @@ void EditorControl::insert_text(const std::span<const char16_t> text) noexcept {
     }
 }
 
+void EditorControl::copy_selection_to_clipboard() noexcept {
+    if (!document_.open() || selection_.empty()) return;
+
+    const std::size_t begin = selection_.begin();
+    const std::size_t end = selection_.end();
+    std::size_t output_units = 1U; // NUL terminator
+    for (std::size_t position = begin; position < end; ++position) {
+        const std::size_t added = document_.text().at(position) == u'\n' ? 2U : 1U;
+        if (output_units > std::numeric_limits<std::size_t>::max() - added) {
+            MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
+                        MB_OK | MB_ICONERROR);
+            return;
+        }
+        output_units += added;
+    }
+    if (output_units > std::numeric_limits<std::size_t>::max() / sizeof(wchar_t)) {
+        MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    const std::size_t output_bytes = output_units * sizeof(wchar_t);
+    HGLOBAL clipboard_memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
+                                           output_bytes);
+    if (clipboard_memory == nullptr) {
+        MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    auto* output = static_cast<wchar_t*>(GlobalLock(clipboard_memory));
+    if (output == nullptr) {
+        GlobalFree(clipboard_memory);
+        MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    std::size_t write = 0;
+    for (std::size_t position = begin; position < end; ++position) {
+        const char16_t value = document_.text().at(position);
+        if (value == u'\n') output[write++] = L'\r';
+        output[write++] = static_cast<wchar_t>(value);
+    }
+    output[write] = L'\0';
+    GlobalUnlock(clipboard_memory);
+
+    bool transferred = false;
+    if (OpenClipboard(window_) != FALSE) {
+        if (EmptyClipboard() != FALSE &&
+            SetClipboardData(CF_UNICODETEXT, clipboard_memory) != nullptr) {
+            transferred = true;
+        }
+        CloseClipboard();
+    }
+    if (transferred) return;
+
+    output = static_cast<wchar_t*>(GlobalLock(clipboard_memory));
+    if (output != nullptr) {
+        security::secure_zero(output, output_bytes);
+        GlobalUnlock(clipboard_memory);
+    }
+    GlobalFree(clipboard_memory);
+    MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
+                MB_OK | MB_ICONERROR);
+}
+
 void EditorControl::key_down(const WPARAM key, const bool shift,
                              const bool control) noexcept {
     if (!document_.open()) return;
+    if (control && key == 'C') {
+        copy_selection_to_clipboard();
+        return;
+    }
     if (control && key == 'A') {
         selection_.set(0, document_.text().size());
         ensure_caret_visible();
