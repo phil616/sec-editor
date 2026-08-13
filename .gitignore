@@ -1,4 +1,6 @@
 /build-linux/
+/build-windows/
+/build-msys2/
 /dist/
 *.user
 *.swp
