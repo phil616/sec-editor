@@ -1,6 +1,7 @@
 #include "editor/editor_control.h"
 
 #include "editor/clipboard_text.h"
+#include "editor/ini_env_highlight.h"
 #include "encoding/encoding.h"
 #include "security/process_guard.h"
 
@@ -147,6 +148,75 @@ std::size_t expand_tabs(char16_t* const buffer, const std::size_t count) noexcep
     }
     return display_count;
 }
+
+bool code_point_uses_cjk_font(const char16_t value) noexcept {
+    return (value >= 0x1100U && value <= 0x11FFU) ||  // Hangul Jamo
+           (value >= 0x2E80U && value <= 0x9FFFU) ||  // CJK radicals, symbols,
+                                                      // punctuation, ideographs
+           (value >= 0xAC00U && value <= 0xD7AFU) ||  // Hangul syllables
+           (value >= 0xF900U && value <= 0xFAFFU) ||  // CJK compatibility ideographs
+           (value >= 0xFE30U && value <= 0xFE4FU) ||  // CJK compatibility forms
+           (value >= 0xFF00U && value <= 0xFFEFU);    // fullwidth forms
+}
+
+bool scalar_uses_cjk_font(const document::SecureGapBuffer& text,
+                          const std::size_t position) noexcept {
+    const char16_t first = text.at(position);
+    if (document::is_high_surrogate(first)) {
+        const std::size_t next = position + 1U;
+        if (next < text.size() && document::is_low_surrogate(text.at(next))) {
+            const std::uint32_t code_point = 0x10000U +
+                ((static_cast<std::uint32_t>(first) - 0xD800U) << 10) +
+                (static_cast<std::uint32_t>(text.at(next)) - 0xDC00U);
+            return code_point >= 0x20000U; // CJK Extension B and later
+        }
+        return false;
+    }
+    if (document::is_low_surrogate(first)) return false; // split scalar
+    return code_point_uses_cjk_font(first);
+}
+
+// Splits [begin, end) into runs of scalars sharing the same font, selects the
+// font for each run on `dc`, and invokes the callback with the run bounds.
+template <typename Callback>
+void for_each_font_run(const document::SecureGapBuffer& text, HDC dc,
+                       HFONT latin, HFONT cjk, std::size_t begin,
+                       const std::size_t end, Callback&& callback) noexcept {
+    std::size_t position = begin;
+    while (position < end) {
+        const bool cjk_run = scalar_uses_cjk_font(text, position);
+        SelectObject(dc, cjk_run ? cjk : latin);
+        std::size_t run_end = text.next_scalar(position);
+        while (run_end < end && scalar_uses_cjk_font(text, run_end) == cjk_run) {
+            run_end = text.next_scalar(run_end);
+        }
+        callback(position, run_end);
+        position = run_end;
+    }
+}
+
+constexpr std::size_t max_highlight_tokens = 8;
+
+COLORREF highlight_color(const highlight::TokenKind kind,
+                         const bool dark) noexcept {
+    switch (kind) {
+    case highlight::TokenKind::comment:
+        return dark ? RGB(106, 153, 85) : RGB(0, 128, 0);
+    case highlight::TokenKind::section:
+        return dark ? RGB(78, 201, 176) : RGB(0, 128, 128);
+    case highlight::TokenKind::key:
+        return dark ? RGB(86, 156, 214) : RGB(0, 0, 200);
+    case highlight::TokenKind::operator_:
+        return dark ? RGB(128, 128, 128) : RGB(120, 120, 120);
+    case highlight::TokenKind::string_:
+        return dark ? RGB(206, 145, 120) : RGB(163, 21, 21);
+    case highlight::TokenKind::number:
+        return dark ? RGB(197, 134, 192) : RGB(128, 0, 128);
+    case highlight::TokenKind::plain:
+        break;
+    }
+    return editor_text(dark);
+}
 }
 
 EditorControl::EditorControl(document::SecureDocument& document) noexcept
@@ -160,22 +230,11 @@ bool EditorControl::initialize(HWND window) noexcept {
         shutdown();
         return false;
     }
-    HDC dc = GetDC(window_);
-    if (dc == nullptr) {
+    font_preset_ = FontPreset::consolas_dengxian;
+    apply_font_preset();
+    if (font_ == nullptr) {
         shutdown();
         return false;
-    }
-    font_ = CreateFontW(-MulDiv(12, GetDeviceCaps(dc, LOGPIXELSY), 72), 0, 0, 0,
-                        FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                        FIXED_PITCH | FF_MODERN, L"Consolas");
-    owns_font_ = font_ != nullptr;
-    if (font_ == nullptr) font_ = static_cast<HFONT>(GetStockObject(SYSTEM_FIXED_FONT));
-    const HGDIOBJ previous = SelectObject(dc, font_);
-    TEXTMETRICW metrics{};
-    if (GetTextMetricsW(dc, &metrics) != 0) {
-        char_width_ = std::max(1L, metrics.tmAveCharWidth);
-        line_height_ = std::max(1L, metrics.tmHeight + metrics.tmExternalLeading + 4L);
     }
     NONCLIENTMETRICSW nonclient{};
     nonclient.cbSize = sizeof(nonclient);
@@ -185,9 +244,6 @@ bool EditorControl::initialize(HWND window) noexcept {
     }
     owns_ui_font_ = ui_font_ != nullptr;
     if (ui_font_ == nullptr) ui_font_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    SelectObject(dc, previous);
-    ReleaseDC(window_, dc);
-    CreateCaret(window_, nullptr, 2, line_height_);
     initialized_ = true;
     document_changed();
     return true;
@@ -197,16 +253,95 @@ void EditorControl::shutdown() noexcept {
     if (caret_shown_ && window_ != nullptr) HideCaret(window_);
     caret_shown_ = false;
     if (window_ != nullptr) DestroyCaret();
-    if (owns_font_ && font_ != nullptr) DeleteObject(font_);
+    release_editor_fonts();
     if (owns_ui_font_ && ui_font_ != nullptr) DeleteObject(ui_font_);
-    font_ = nullptr;
-    owns_font_ = false;
     ui_font_ = nullptr;
     owns_ui_font_ = false;
     scratch_.release();
     input_.release();
     initialized_ = false;
     window_ = nullptr;
+}
+
+void EditorControl::release_editor_fonts() noexcept {
+    if (owns_font_ && font_ != nullptr) DeleteObject(font_);
+    if (owns_cjk_font_ && cjk_font_ != nullptr && cjk_font_ != font_) {
+        DeleteObject(cjk_font_);
+    }
+    font_ = nullptr;
+    cjk_font_ = nullptr;
+    owns_font_ = false;
+    owns_cjk_font_ = false;
+}
+
+void EditorControl::apply_font_preset() noexcept {
+    if (window_ == nullptr) return;
+    HDC dc = GetDC(window_);
+    if (dc == nullptr) return;
+    release_editor_fonts();
+
+    const wchar_t* latin = L"Consolas";
+    const wchar_t* cjk = L"DengXian";
+    switch (font_preset_) {
+    case FontPreset::consolas_dengxian:
+        latin = L"Consolas"; cjk = L"DengXian"; break;
+    case FontPreset::consolas_simhei:
+        latin = L"Consolas"; cjk = L"SimHei"; break;
+    case FontPreset::dengxian:
+        latin = L"DengXian"; cjk = L"DengXian"; break;
+    case FontPreset::simhei:
+        latin = L"SimHei"; cjk = L"SimHei"; break;
+    }
+    const auto create = [dc](const wchar_t* face, const bool fixed) noexcept {
+        return CreateFontW(-MulDiv(12, GetDeviceCaps(dc, LOGPIXELSY), 72), 0, 0, 0,
+                           FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY,
+                           fixed ? (FIXED_PITCH | FF_MODERN)
+                                 : (DEFAULT_PITCH | FF_DONTCARE),
+                           face);
+    };
+    font_ = create(latin, true);
+    owns_font_ = font_ != nullptr;
+    if (font_ == nullptr) font_ = static_cast<HFONT>(GetStockObject(SYSTEM_FIXED_FONT));
+    if (std::wcscmp(latin, cjk) == 0) {
+        cjk_font_ = font_;
+        owns_cjk_font_ = false;
+    } else {
+        cjk_font_ = create(cjk, false);
+        owns_cjk_font_ = cjk_font_ != nullptr;
+        if (cjk_font_ == nullptr) cjk_font_ = font_;
+    }
+
+    // Line height covers the taller of the two fonts so CJK glyphs never clip.
+    char_width_ = 8;
+    int metrics_height = 0;
+    const HGDIOBJ previous = SelectObject(dc, font_);
+    TEXTMETRICW latin_metrics{};
+    if (GetTextMetricsW(dc, &latin_metrics) != 0) {
+        char_width_ = std::max(1L, latin_metrics.tmAveCharWidth);
+        metrics_height = std::max(metrics_height,
+            static_cast<int>(latin_metrics.tmHeight + latin_metrics.tmExternalLeading));
+    }
+    SelectObject(dc, cjk_font_);
+    TEXTMETRICW cjk_metrics{};
+    if (GetTextMetricsW(dc, &cjk_metrics) != 0) {
+        metrics_height = std::max(metrics_height,
+            static_cast<int>(cjk_metrics.tmHeight + cjk_metrics.tmExternalLeading));
+    }
+    SelectObject(dc, previous);
+    ReleaseDC(window_, dc);
+    line_height_ = std::max(1, metrics_height + 4);
+
+    if (caret_shown_) HideCaret(window_);
+    DestroyCaret(window_);
+    CreateCaret(window_, nullptr, 2, line_height_);
+    if (caret_shown_) (void)ShowCaret(window_);
+
+    rebuild_horizontal_layout();
+    update_scrollbars();
+    update_caret();
+    InvalidateRect(window_, nullptr, FALSE);
 }
 
 void EditorControl::document_changed() noexcept {
@@ -401,19 +536,23 @@ int EditorControl::measure_text_range(HDC dc, std::size_t begin,
     const std::size_t capacity = scratch_.size() / sizeof(char16_t);
     const std::size_t input_capacity = std::max<std::size_t>(1U, capacity / 4U);
     long long total = 0;
-    while (begin < end) {
-        const std::size_t count = std::min(input_capacity, end - begin);
-        if (!document_.text().copy_range(begin, begin + count,
-                                         std::span<char16_t>(buffer, count))) break;
-        const std::size_t display_count = expand_tabs(buffer, count);
-        SIZE extent{};
-        if (GetTextExtentPoint32W(dc, reinterpret_cast<const wchar_t*>(buffer),
-                                  static_cast<int>(display_count), &extent) != 0) {
-            total += extent.cx;
-        }
-        security::secure_zero(buffer, display_count * sizeof(char16_t));
-        begin += count;
-    }
+    for_each_font_run(document_.text(), dc, font_, cjk_font_, begin, end,
+        [&](const std::size_t run_begin, const std::size_t run_end) {
+            std::size_t position = run_begin;
+            while (position < run_end) {
+                const std::size_t count = std::min(input_capacity, run_end - position);
+                if (!document_.text().copy_range(position, position + count,
+                                                 std::span<char16_t>(buffer, count))) break;
+                const std::size_t display_count = expand_tabs(buffer, count);
+                SIZE extent{};
+                if (GetTextExtentPoint32W(dc, reinterpret_cast<const wchar_t*>(buffer),
+                                          static_cast<int>(display_count), &extent) != 0) {
+                    total += extent.cx;
+                }
+                security::secure_zero(buffer, display_count * sizeof(char16_t));
+                position += count;
+            }
+        });
     return static_cast<int>(std::min<long long>(total, INT_MAX));
 }
 
@@ -427,25 +566,29 @@ int EditorControl::draw_text_range(HDC dc, std::size_t begin, const std::size_t 
     int total = 0;
     SetTextColor(dc, foreground);
     SetBkColor(dc, background);
-    while (begin < end) {
-        const std::size_t count = std::min(input_capacity, end - begin);
-        if (!document_.text().copy_range(begin, begin + count,
-                                         std::span<char16_t>(buffer, count))) break;
-        const std::size_t display_count = expand_tabs(buffer, count);
-        SIZE extent{};
-        if (GetTextExtentPoint32W(dc, reinterpret_cast<const wchar_t*>(buffer),
-                                  static_cast<int>(display_count), &extent) == 0) {
-            extent.cx = static_cast<LONG>(display_count) * char_width_;
-        }
-        const RECT area{x, y, x + extent.cx, y + line_height_};
-        ExtTextOutW(dc, x, y, ETO_OPAQUE, &area,
-                    reinterpret_cast<const wchar_t*>(buffer),
-                    static_cast<UINT>(display_count), nullptr);
-        security::secure_zero(buffer, display_count * sizeof(char16_t));
-        begin += count;
-        x += extent.cx;
-        total += extent.cx;
-    }
+    for_each_font_run(document_.text(), dc, font_, cjk_font_, begin, end,
+        [&](const std::size_t run_begin, const std::size_t run_end) {
+            std::size_t position = run_begin;
+            while (position < run_end) {
+                const std::size_t count = std::min(input_capacity, run_end - position);
+                if (!document_.text().copy_range(position, position + count,
+                                                 std::span<char16_t>(buffer, count))) break;
+                const std::size_t display_count = expand_tabs(buffer, count);
+                SIZE extent{};
+                if (GetTextExtentPoint32W(dc, reinterpret_cast<const wchar_t*>(buffer),
+                                          static_cast<int>(display_count), &extent) == 0) {
+                    extent.cx = static_cast<LONG>(display_count) * char_width_;
+                }
+                const RECT area{x, y, x + extent.cx, y + line_height_};
+                ExtTextOutW(dc, x, y, ETO_OPAQUE, &area,
+                            reinterpret_cast<const wchar_t*>(buffer),
+                            static_cast<UINT>(display_count), nullptr);
+                security::secure_zero(buffer, display_count * sizeof(char16_t));
+                position += count;
+                x += extent.cx;
+                total += extent.cx;
+            }
+        });
     return total;
 }
 
@@ -467,13 +610,53 @@ void EditorControl::draw_line(HDC dc, const std::size_t line, const int y) noexc
     FillRect(dc, &margin, background);
     const int saved = SaveDC(dc);
     IntersectClipRect(dc, content_left, y, client_width_, y + line_height_);
+    const COLORREF plain_foreground = editor_text(dark_theme_);
+    const COLORREF selected_foreground = selection_text(dark_theme_);
+    const COLORREF selected_background = selection_background(dark_theme_);
+    const COLORREF normal_background = editor_background(dark_theme_);
     int x = 4 + start_pixel - horizontal_offset_;
-    x += draw_text_range(dc, visible_start, select_begin, x, y,
-                         editor_text(dark_theme_), editor_background(dark_theme_));
-    x += draw_text_range(dc, select_begin, select_end, x, y,
-                         selection_text(dark_theme_), selection_background(dark_theme_));
-    x += draw_text_range(dc, select_end, visible_end, x, y,
-                         editor_text(dark_theme_), editor_background(dark_theme_));
+    const auto draw_segment = [&](const std::size_t begin, const std::size_t stop,
+                                  const COLORREF foreground,
+                                  const COLORREF foreground_selected) {
+        if (stop <= begin) return;
+        const std::size_t selected_begin = std::clamp(select_begin, begin, stop);
+        const std::size_t selected_end = std::clamp(select_end, begin, stop);
+        x += draw_text_range(dc, begin, selected_begin, x, y,
+                             foreground, normal_background);
+        x += draw_text_range(dc, selected_begin, selected_end, x, y,
+                             foreground_selected, selected_background);
+        x += draw_text_range(dc, selected_end, stop, x, y,
+                             foreground, normal_background);
+    };
+
+    const bool highlighted = syntax_highlighting_ &&
+        highlight::path_is_highlightable(document_.path());
+    if (highlighted) {
+        const bool is_ini = highlight::path_is_ini(document_.path());
+        const std::size_t start = lines_.line_start(line);
+        highlight::Token tokens[max_highlight_tokens]{};
+        const std::size_t token_count = highlight::tokenize_line(
+            document_.text(), start, end, is_ini, tokens, max_highlight_tokens);
+        std::size_t cursor = visible_start;
+        for (std::size_t index = 0; index < token_count; ++index) {
+            const std::size_t token_begin = std::max(tokens[index].begin, visible_start);
+            const std::size_t token_end = std::min(tokens[index].end, visible_end);
+            if (cursor < token_begin) {
+                draw_segment(cursor, token_begin, plain_foreground, selected_foreground);
+            }
+            if (token_end > token_begin) {
+                const COLORREF color =
+                    highlight_color(tokens[index].kind, dark_theme_);
+                draw_segment(token_begin, token_end, color, color);
+            }
+            if (token_end > cursor) cursor = token_end;
+        }
+        if (cursor < visible_end) {
+            draw_segment(cursor, visible_end, plain_foreground, selected_foreground);
+        }
+    } else {
+        draw_segment(visible_start, visible_end, plain_foreground, selected_foreground);
+    }
     RestoreDC(dc, saved);
     const RECT tail{std::clamp(x, content_left, client_width_), y,
                     client_width_, y + line_height_};
@@ -906,6 +1089,18 @@ void EditorControl::set_tab_mode(const TabMode mode) noexcept {
 void EditorControl::set_dark_theme(const bool dark) noexcept {
     if (dark_theme_ == dark) return;
     dark_theme_ = dark;
+    if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
+}
+
+void EditorControl::set_font(const FontPreset preset) noexcept {
+    if (preset == font_preset_) return;
+    font_preset_ = preset;
+    apply_font_preset();
+}
+
+void EditorControl::set_syntax_highlighting(const bool enabled) noexcept {
+    if (syntax_highlighting_ == enabled) return;
+    syntax_highlighting_ = enabled;
     if (window_ != nullptr) InvalidateRect(window_, nullptr, FALSE);
 }
 

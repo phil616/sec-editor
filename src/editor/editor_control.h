@@ -18,6 +18,13 @@ enum class TabMode {
     four_spaces,
 };
 
+enum class FontPreset {
+    consolas_dengxian,
+    consolas_simhei,
+    dengxian,
+    simhei,
+};
+
 class EditorControl final {
 public:
     explicit EditorControl(document::SecureDocument& document) noexcept;
@@ -44,6 +51,8 @@ public:
     void status_changed() noexcept;
     void set_tab_mode(TabMode mode) noexcept;
     void set_dark_theme(bool dark) noexcept;
+    void set_font(FontPreset preset) noexcept;
+    void set_syntax_highlighting(bool enabled) noexcept;
     std::size_t caret() const noexcept { return selection_.caret(); }
     const LineIndex& lines() const noexcept { return lines_; }
 
@@ -59,6 +68,8 @@ private:
 
     void rebuild() noexcept;
     void rebuild_horizontal_layout() noexcept;
+    void apply_font_preset() noexcept;
+    void release_editor_fonts() noexcept;
     void update_scrollbars() noexcept;
     void update_caret() noexcept;
     void ensure_caret_visible() noexcept;
@@ -83,6 +94,8 @@ private:
     HWND window_ = nullptr;
     HFONT font_ = nullptr;
     bool owns_font_ = false;
+    HFONT cjk_font_ = nullptr;
+    bool owns_cjk_font_ = false;
     HFONT ui_font_ = nullptr;
     bool owns_ui_font_ = false;
     int char_width_ = 8;
@@ -103,6 +116,8 @@ private:
     bool mouse_selecting_ = false;
     TabMode tab_mode_ = TabMode::literal_tab;
     bool dark_theme_ = false;
+    FontPreset font_preset_ = FontPreset::consolas_dengxian;
+    bool syntax_highlighting_ = false;
     bool initialized_ = false;
     bool caret_shown_ = false;
 };

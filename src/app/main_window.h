@@ -60,9 +60,13 @@ private:
     HMENU security_menu_ = nullptr;
     HMENU tab_menu_ = nullptr;
     HMENU theme_menu_ = nullptr;
+    HMENU format_menu_ = nullptr;
+    HMENU font_menu_ = nullptr;
     std::wstring initial_path_{};
     ThemePreference theme_preference_ = ThemePreference::system;
     editor::TabMode tab_mode_ = editor::TabMode::literal_tab;
+    editor::FontPreset font_preset_ = editor::FontPreset::consolas_dengxian;
+    bool syntax_highlighting_ = false;
     bool screen_capture_protection_enabled_ = false;
     bool title_dirty_ = false;
     bool cleared_for_system_event_ = false;

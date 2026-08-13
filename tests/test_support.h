@@ -23,3 +23,4 @@ void run_clipboard_text_tests();
 void run_gap_buffer_tests();
 void run_document_tests();
 void run_roundtrip_tests();
+void run_ini_env_highlight_tests();

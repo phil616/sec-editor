@@ -94,6 +94,8 @@ bool MainWindow::on_create() noexcept {
     if (!document_.create_empty()) return false;
     editor_.document_changed();
     editor_.set_tab_mode(tab_mode_);
+    editor_.set_font(font_preset_);
+    editor_.set_syntax_highlighting(syntax_highlighting_);
     update_menu_checks();
     update_security_menu();
     if (WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) == FALSE) {
@@ -108,19 +110,26 @@ bool MainWindow::create_menu_bar() noexcept {
     HMENU edit_menu = CreatePopupMenu();
     tab_menu_ = CreatePopupMenu();
     theme_menu_ = CreatePopupMenu();
+    format_menu_ = CreatePopupMenu();
+    font_menu_ = CreatePopupMenu();
     security_menu_ = CreatePopupMenu();
     HMENU help_menu = CreatePopupMenu();
     if (menu_bar_ == nullptr || file_menu == nullptr || edit_menu == nullptr ||
         tab_menu_ == nullptr ||
-        theme_menu_ == nullptr || security_menu_ == nullptr || help_menu == nullptr) {
+        theme_menu_ == nullptr || format_menu_ == nullptr ||
+        font_menu_ == nullptr ||
+        security_menu_ == nullptr || help_menu == nullptr) {
         if (menu_bar_ != nullptr) DestroyMenu(menu_bar_);
         if (file_menu != nullptr) DestroyMenu(file_menu);
         if (edit_menu != nullptr) DestroyMenu(edit_menu);
         if (tab_menu_ != nullptr) DestroyMenu(tab_menu_);
         if (theme_menu_ != nullptr) DestroyMenu(theme_menu_);
+        if (format_menu_ != nullptr) DestroyMenu(format_menu_);
+        if (font_menu_ != nullptr) DestroyMenu(font_menu_);
         if (security_menu_ != nullptr) DestroyMenu(security_menu_);
         if (help_menu != nullptr) DestroyMenu(help_menu);
         menu_bar_ = security_menu_ = tab_menu_ = theme_menu_ = nullptr;
+        format_menu_ = font_menu_ = nullptr;
         return false;
     }
 
@@ -146,6 +155,18 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(theme_menu_, MF_STRING, command_theme_dark, L"深色(&D)");
     AppendMenuW(theme_menu_, MF_STRING, command_theme_system, L"跟随系统(&S)");
 
+    AppendMenuW(font_menu_, MF_STRING, command_font_consolas_dengxian,
+                L"Consolas + 等线（默认）(&C)");
+    AppendMenuW(font_menu_, MF_STRING, command_font_consolas_simhei,
+                L"Consolas + 黑体(&H)");
+    AppendMenuW(font_menu_, MF_STRING, command_font_dengxian, L"等线 DengXian(&D)");
+    AppendMenuW(font_menu_, MF_STRING, command_font_simhei, L"黑体 SimHei(&S)");
+    AppendMenuW(format_menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(font_menu_),
+                L"字体(&F)");
+    AppendMenuW(format_menu_, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(format_menu_, MF_STRING, command_syntax_highlight,
+                L"颜色渲染（.ini / .env 语法高亮）(&R)");
+
     AppendMenuW(security_menu_, MF_STRING | MF_GRAYED,
                 command_security_status, L"当前文档：正在检查");
     AppendMenuW(security_menu_, MF_SEPARATOR, 0, nullptr);
@@ -163,6 +184,7 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(edit_menu), L"编辑(&E)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(tab_menu_), L"Tab(&T)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(theme_menu_), L"主题(&V)");
+    AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(format_menu_), L"格式(&O)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(security_menu_),
                 L"安全状态：正在检查(&S)");
     AppendMenuW(menu_bar_, MF_POPUP, reinterpret_cast<UINT_PTR>(help_menu), L"帮助(&H)");
@@ -315,6 +337,31 @@ void MainWindow::on_command(const unsigned command) noexcept {
         update_menu_checks();
         apply_theme();
         break;
+    case command_font_consolas_dengxian:
+        font_preset_ = editor::FontPreset::consolas_dengxian;
+        editor_.set_font(font_preset_);
+        update_menu_checks();
+        break;
+    case command_font_consolas_simhei:
+        font_preset_ = editor::FontPreset::consolas_simhei;
+        editor_.set_font(font_preset_);
+        update_menu_checks();
+        break;
+    case command_font_dengxian:
+        font_preset_ = editor::FontPreset::dengxian;
+        editor_.set_font(font_preset_);
+        update_menu_checks();
+        break;
+    case command_font_simhei:
+        font_preset_ = editor::FontPreset::simhei;
+        editor_.set_font(font_preset_);
+        update_menu_checks();
+        break;
+    case command_syntax_highlight:
+        syntax_highlighting_ = !syntax_highlighting_;
+        editor_.set_syntax_highlighting(syntax_highlighting_);
+        update_menu_checks();
+        break;
     case command_screen_capture_protection:
         toggle_screen_capture_protection();
         break;
@@ -351,6 +398,25 @@ void MainWindow::update_menu_checks() noexcept {
         else if (theme_preference_ == ThemePreference::dark) selected = command_theme_dark;
         CheckMenuRadioItem(theme_menu_, command_theme_light, command_theme_system,
                            selected, MF_BYCOMMAND);
+    }
+    if (font_menu_ != nullptr) {
+        UINT selected = command_font_consolas_dengxian;
+        switch (font_preset_) {
+        case editor::FontPreset::consolas_dengxian: break;
+        case editor::FontPreset::consolas_simhei:
+            selected = command_font_consolas_simhei; break;
+        case editor::FontPreset::dengxian:
+            selected = command_font_dengxian; break;
+        case editor::FontPreset::simhei:
+            selected = command_font_simhei; break;
+        }
+        CheckMenuRadioItem(font_menu_, command_font_consolas_dengxian,
+                           command_font_simhei, selected, MF_BYCOMMAND);
+    }
+    if (format_menu_ != nullptr) {
+        CheckMenuItem(format_menu_, command_syntax_highlight,
+                      MF_BYCOMMAND | (syntax_highlighting_
+                          ? MF_CHECKED : MF_UNCHECKED));
     }
     if (security_menu_ != nullptr) {
         CheckMenuItem(security_menu_, command_screen_capture_protection,
