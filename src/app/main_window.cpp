@@ -421,8 +421,7 @@ void MainWindow::show_about() noexcept {
         L"作者：GreenShadeCapitalSecTeam\n"
         L"版权所有 © 2026 GreenShadeCapitalSecTeam\n"
         L"许可证：MIT License\n\n"
-        L"用于敏感纯文本的原生 Windows 安全内存编辑器。\n"
-        L"文档缓冲区使用 VirtualLock，并从 Windows Error Reporting 中排除。",
+        L"用于敏感纯文本的原生 Windows 安全内存编辑器。\n",
         L"关于安全编辑器", MB_OK | MB_ICONINFORMATION);
 }
 
