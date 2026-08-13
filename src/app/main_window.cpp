@@ -539,6 +539,8 @@ bool MainWindow::save(const bool save_as) noexcept {
     }
     document_.mark_saved(path, selected);
     update_title();
+    // The new path may change whether the file is highlighted (.ini/.env).
+    InvalidateRect(window_, nullptr, FALSE);
     return true;
 }
 

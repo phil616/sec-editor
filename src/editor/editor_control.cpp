@@ -334,7 +334,7 @@ void EditorControl::apply_font_preset() noexcept {
     line_height_ = std::max(1, metrics_height + 4);
 
     if (caret_shown_) HideCaret(window_);
-    DestroyCaret(window_);
+    DestroyCaret();
     CreateCaret(window_, nullptr, 2, line_height_);
     if (caret_shown_) (void)ShowCaret(window_);
 
