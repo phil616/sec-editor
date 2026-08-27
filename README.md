@@ -32,11 +32,11 @@ mempad.exe [filename]
 
 ## Windows 右键菜单
 
-在“文件”菜单中点击“安装打开方式拓展”，即可为当前 Windows 用户添加“使用 mempad 打开”文件右键菜单；不需要管理员权限，也不会改变任何后缀的默认打开程序。在 Windows 11 中，该项目可能显示在“显示更多选项”子菜单中。
+在“文件”菜单中点击“安装打开方式拓展”，即可为当前 Windows 用户注册 mempad；不需要管理员权限，也不会改变任何后缀的默认打开程序。Windows 11 的现代菜单可通过“打开方式 → mempad”打开文件；点击“显示更多选项”后，也可直接选择“使用 mempad 打开”。Windows 10 的旧式右键菜单会直接显示“使用 mempad 打开”。
 
 安装和卸载均为幂等操作，可以重复执行。安装操作会将已有的 mempad 菜单项更新为当前正在运行的 `mempad.exe` 路径，因此移动程序后只需再次点击安装。卸载只移除 mempad 自己的菜单项，不删除或修改其他程序的关联。`.crt` / `.cer` 等文件如果实际包含不受支持的二进制编码，编辑器会沿用普通文件打开流程并显示错误提示。
 
-实现遵循 Microsoft 的 [Application Registration](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration)、[File Types](https://learn.microsoft.com/en-us/windows/win32/shell/fa-file-types) 和 [Verb Selection Model](https://learn.microsoft.com/en-us/windows/win32/shell/how-to-employ-the-verb-selection-model) 文档：关联写入当前用户的 `Software\Classes\SystemFileAssociations`，使用单选静态 verb，并在变更后通知 Windows Shell 刷新关联缓存。
+实现遵循 Microsoft 的 [Application Registration](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration)、[Open With Registration](https://learn.microsoft.com/en-us/windows/win32/shell/how-to-include-an-application-on-the-open-with-dialog-box)、[File Types](https://learn.microsoft.com/en-us/windows/win32/shell/fa-file-types) 和 [Verb Selection Model](https://learn.microsoft.com/en-us/windows/win32/shell/how-to-employ-the-verb-selection-model) 文档：应用、ProgID、支持类型和 OpenWithProgids 均写入当前用户范围；静态 verb 使用单选模型，并在变更后通知 Windows Shell 刷新关联缓存。
 
 ## Credits
 

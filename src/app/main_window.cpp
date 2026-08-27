@@ -494,9 +494,11 @@ void MainWindow::update_shell_integration(const bool install) noexcept {
     if (result.succeeded) {
         MessageBoxW(window_,
             install
-                ? L"已安装“使用 mempad 打开”右键菜单。\n\n"
+                ? L"已安装 mempad 文件打开方式。\n\n"
+                  L"Windows 11：右键 → 打开方式 → mempad。\n"
+                  L"显示更多选项中也可直接选择“使用 mempad 打开”。\n\n"
                   L"重复安装是安全的；程序移动后可再次安装以更新路径。"
-                : L"已卸载“使用 mempad 打开”右键菜单。\n\n"
+                : L"已卸载 mempad 文件打开方式和右键菜单。\n\n"
                   L"重复卸载是安全的。",
             install ? L"安装打开方式拓展" : L"卸载打开方式拓展",
             MB_OK | MB_ICONINFORMATION);
