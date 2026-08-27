@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SafeEditor VERSION 1.0.4 LANGUAGES CXX)
+project(SafeEditor VERSION 1.0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,6 +33,7 @@ if(WIN32)
         src/main.cpp
         src/app/application.cpp
         src/app/main_window.cpp
+        src/app/shell_integration.cpp
         src/editor/editor_control.cpp
         src/io/file_reader.cpp
         src/io/file_writer.cpp

@@ -6,6 +6,7 @@
 
 - 打开、编辑、保存、另存为、关闭文档和退出；
 - 支持 `mempad.exe [filename]` 命令行启动，并支持从 Windows Explorer 把文件拖入窗口；
+- 可从“文件”菜单按当前用户安装或卸载“使用 mempad 打开”右键菜单；支持 `.txt`、`.text`、`.md`、`.csv`、`.pem`、`.env`、`.ini`、`.yaml`、`.yml`、`.key`、`.json`、`.crt`、`.cer`、`.sig`、`.csr`、`.req`、`.conf`、`.inf`；
 - 未保存修改的“保存 / 放弃 / 取消”提示；
 - 严格识别 ASCII、UTF-8（有/无 BOM）、UTF-16 LE/BE（有 BOM）；
 - 检测 CRLF、LF、CR 和混合换行，内部规范化为 LF，保存时恢复选定格式；
@@ -27,7 +28,15 @@
 mempad.exe [filename]
 ```
 
-不带文件名时打开空白文档；提供一个文件名时直接打开该文件。项目不负责把程序加入 `PATH`、创建文件关联或安装到系统目录，额外参数会被拒绝。
+不带文件名时打开空白文档；提供一个文件名时直接打开该文件。项目不负责把程序加入 `PATH` 或安装到系统目录，额外参数会被拒绝。
+
+## Windows 右键菜单
+
+在“文件”菜单中点击“安装打开方式拓展”，即可为当前 Windows 用户添加“使用 mempad 打开”文件右键菜单；不需要管理员权限，也不会改变任何后缀的默认打开程序。在 Windows 11 中，该项目可能显示在“显示更多选项”子菜单中。
+
+安装和卸载均为幂等操作，可以重复执行。安装操作会将已有的 mempad 菜单项更新为当前正在运行的 `mempad.exe` 路径，因此移动程序后只需再次点击安装。卸载只移除 mempad 自己的菜单项，不删除或修改其他程序的关联。`.crt` / `.cer` 等文件如果实际包含不受支持的二进制编码，编辑器会沿用普通文件打开流程并显示错误提示。
+
+实现遵循 Microsoft 的 [Application Registration](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration)、[File Types](https://learn.microsoft.com/en-us/windows/win32/shell/fa-file-types) 和 [Verb Selection Model](https://learn.microsoft.com/en-us/windows/win32/shell/how-to-employ-the-verb-selection-model) 文档：关联写入当前用户的 `Software\Classes\SystemFileAssociations`，使用单选静态 verb，并在变更后通知 Windows Shell 刷新关联缓存。
 
 ## Credits
 

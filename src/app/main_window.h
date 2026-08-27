@@ -39,6 +39,7 @@ private:
     void update_menu_checks() noexcept;
     void update_security_menu() noexcept;
     void toggle_screen_capture_protection() noexcept;
+    void update_shell_integration(bool install) noexcept;
     void show_about() noexcept;
     CloseDecision confirm_close_document() noexcept;
     bool reset_document_for_open() noexcept;

@@ -1,6 +1,7 @@
 #include "app/main_window.h"
 
 #include "app/commands.h"
+#include "app/shell_integration.h"
 #include "io/file_dialog.h"
 #include "io/file_reader.h"
 #include "io/file_writer.h"
@@ -138,6 +139,11 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(file_menu, MF_STRING, command_save_as, L"另存为(&A)...");
     AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file_menu, MF_STRING, command_close, L"关闭文档(&C)");
+    AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file_menu, MF_STRING, command_install_shell_extension,
+                L"安装打开方式拓展(&I)");
+    AppendMenuW(file_menu, MF_STRING, command_uninstall_shell_extension,
+                L"卸载打开方式拓展(&U)");
     AppendMenuW(file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file_menu, MF_STRING, command_exit, L"退出(&X)");
 
@@ -307,6 +313,8 @@ void MainWindow::on_command(const unsigned command) noexcept {
     case command_save: (void)save(false); break;
     case command_save_as: (void)save(true); break;
     case command_close: close_document(); break;
+    case command_install_shell_extension: update_shell_integration(true); break;
+    case command_uninstall_shell_extension: update_shell_integration(false); break;
     case command_exit: SendMessageW(window_, WM_CLOSE, 0, 0); break;
     case command_cut: editor_.cut_selection_to_clipboard(); break;
     case command_copy: editor_.copy_selection_to_clipboard(); break;
@@ -478,6 +486,39 @@ void MainWindow::toggle_screen_capture_protection() noexcept {
     }
     screen_capture_protection_enabled_ = enable;
     update_menu_checks();
+}
+
+void MainWindow::update_shell_integration(const bool install) noexcept {
+    const shell_integration::Result result = install
+        ? shell_integration::install() : shell_integration::uninstall();
+    if (result.succeeded) {
+        MessageBoxW(window_,
+            install
+                ? L"已安装“使用 mempad 打开”右键菜单。\n\n"
+                  L"重复安装是安全的；程序移动后可再次安装以更新路径。"
+                : L"已卸载“使用 mempad 打开”右键菜单。\n\n"
+                  L"重复卸载是安全的。",
+            install ? L"安装打开方式拓展" : L"卸载打开方式拓展",
+            MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    wchar_t system_message[192]{};
+    if (result.system_code != ERROR_SUCCESS) {
+        (void)FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
+                                 FORMAT_MESSAGE_IGNORE_INSERTS,
+                             nullptr, result.system_code, 0, system_message,
+                             static_cast<DWORD>(std::size(system_message)), nullptr);
+    }
+    wchar_t message[640]{};
+    std::swprintf(message, std::size(message),
+                  L"无法%ls打开方式拓展。%ls%ls\n\nWindows 错误码：%lu\n%ls\n\n"
+                  L"操作可以安全重试。",
+                  install ? L"安装" : L"卸载",
+                  result.extension != nullptr ? L"\n失败的后缀：" : L"",
+                  result.extension != nullptr ? result.extension : L"",
+                  static_cast<unsigned long>(result.system_code), system_message);
+    MessageBoxW(window_, message, L"安全编辑器", MB_OK | MB_ICONERROR);
 }
 
 void MainWindow::show_about() noexcept {
