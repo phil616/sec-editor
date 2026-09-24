@@ -36,6 +36,9 @@ private:
     bool create_menu_bar() noexcept;
     void on_command(unsigned command) noexcept;
     void apply_theme() noexcept;
+    void apply_menu_theme() noexcept;
+    bool draw_menu_item(DRAWITEMSTRUCT& item) noexcept;
+    bool measure_menu_item(MEASUREITEMSTRUCT& item) noexcept;
     void update_menu_checks() noexcept;
     void update_security_menu() noexcept;
     void toggle_screen_capture_protection() noexcept;
@@ -58,6 +61,8 @@ private:
     document::SecureDocument document_{};
     editor::EditorControl editor_;
     HMENU menu_bar_ = nullptr;
+    HBRUSH menu_background_ = nullptr;
+    bool dark_theme_ = false;
     HMENU security_menu_ = nullptr;
     HMENU tab_menu_ = nullptr;
     HMENU theme_menu_ = nullptr;

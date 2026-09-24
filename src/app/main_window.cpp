@@ -22,6 +22,24 @@ constexpr UINT editor_changed = WM_APP + 1U;
 // value is also accepted by older supported Windows 10 releases as WDA_MONITOR.
 constexpr DWORD screen_capture_exclusion_affinity = 0x00000011U;
 
+HFONT create_menu_font() noexcept {
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0)) {
+        return nullptr;
+    }
+    return CreateFontIndirectW(&metrics.lfMenuFont);
+}
+
+void menu_label(HMENU menu, UINT position, wchar_t (&text)[128]) noexcept {
+    MENUITEMINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = MIIM_STRING;
+    info.dwTypeData = text;
+    info.cch = static_cast<UINT>(std::size(text));
+    (void)GetMenuItemInfoW(menu, position, TRUE, &info);
+}
+
 bool system_uses_dark_theme() noexcept {
     HIGHCONTRASTW high_contrast{};
     high_contrast.cbSize = sizeof(high_contrast);
@@ -45,6 +63,7 @@ MainWindow::MainWindow(HINSTANCE instance) noexcept
 
 MainWindow::~MainWindow() {
     document_.close();
+    if (menu_background_ != nullptr) DeleteObject(menu_background_);
 }
 
 bool MainWindow::create(const int show_command,
@@ -206,6 +225,30 @@ LRESULT MainWindow::dispatch(const UINT message, const WPARAM wparam,
     case WM_COMMAND:
         on_command(LOWORD(wparam));
         return 0;
+    case WM_MEASUREITEM:
+        if (measure_menu_item(*reinterpret_cast<MEASUREITEMSTRUCT*>(lparam))) return TRUE;
+        return DefWindowProcW(window_, message, wparam, lparam);
+    case WM_DRAWITEM:
+        if (draw_menu_item(*reinterpret_cast<DRAWITEMSTRUCT*>(lparam))) return TRUE;
+        return DefWindowProcW(window_, message, wparam, lparam);
+    case WM_MENUCHAR:
+        if (dark_theme_ && reinterpret_cast<HMENU>(lparam) == menu_bar_) {
+            for (int position = 0; position < GetMenuItemCount(menu_bar_); ++position) {
+                wchar_t text[128]{};
+                menu_label(menu_bar_, static_cast<UINT>(position), text);
+                for (const wchar_t* cursor = text; *cursor != L'\0'; ++cursor) {
+                    if (*cursor != L'&' || cursor[1] == L'\0') continue;
+                    ++cursor;
+                    if (*cursor == L'&') continue;
+                    wchar_t key = static_cast<wchar_t>(LOWORD(wparam));
+                    wchar_t mnemonic = *cursor;
+                    CharUpperBuffW(&key, 1);
+                    CharUpperBuffW(&mnemonic, 1);
+                    if (key == mnemonic) return MAKELRESULT(position, MNC_EXECUTE);
+                }
+            }
+        }
+        return DefWindowProcW(window_, message, wparam, lparam);
     case WM_KEYDOWN: {
         const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         if (control && wparam == 'O') { open_dialog(); return 0; }
@@ -383,6 +426,8 @@ void MainWindow::apply_theme() noexcept {
     if (window_ == nullptr) return;
     const bool dark = theme_preference_ == ThemePreference::dark ||
         (theme_preference_ == ThemePreference::system && system_uses_dark_theme());
+    dark_theme_ = dark;
+    apply_menu_theme();
     const BOOL dark_mode = dark ? TRUE : FALSE;
     (void)DwmSetWindowAttribute(window_, static_cast<DWMWINDOWATTRIBUTE>(20),
                                 &dark_mode, sizeof(dark_mode));
@@ -391,6 +436,72 @@ void MainWindow::apply_theme() noexcept {
     RedrawWindow(window_, nullptr, nullptr,
                  RDW_INVALIDATE | RDW_NOERASE | RDW_FRAME | RDW_ALLCHILDREN);
     DrawMenuBar(window_);
+}
+
+void MainWindow::apply_menu_theme() noexcept {
+    if (menu_bar_ == nullptr) return;
+    if (dark_theme_ && menu_background_ == nullptr) {
+        menu_background_ = CreateSolidBrush(RGB(45, 45, 48));
+    }
+    MENUINFO info{};
+    info.cbSize = sizeof(info);
+    // Only the top-level bar is custom drawn; popup menus remain native.
+    info.fMask = MIM_BACKGROUND;
+    info.hbrBack = dark_theme_ ? menu_background_ : nullptr;
+    (void)SetMenuInfo(menu_bar_, &info);
+    for (int position = 0; position < GetMenuItemCount(menu_bar_); ++position) {
+        MENUITEMINFOW item{};
+        item.cbSize = sizeof(item);
+        item.fMask = MIIM_FTYPE | MIIM_DATA;
+        item.fType = dark_theme_ ? MFT_OWNERDRAW : MFT_STRING;
+        item.dwItemData = static_cast<ULONG_PTR>(position);
+        (void)SetMenuItemInfoW(menu_bar_, static_cast<UINT>(position), TRUE, &item);
+    }
+}
+
+bool MainWindow::measure_menu_item(MEASUREITEMSTRUCT& item) noexcept {
+    if (item.CtlType != ODT_MENU || !dark_theme_) return false;
+    wchar_t text[128]{};
+    menu_label(menu_bar_, static_cast<UINT>(item.itemData), text);
+    HDC dc = GetDC(window_);
+    if (dc == nullptr) return false;
+    HFONT font = create_menu_font();
+    const HGDIOBJ previous = SelectObject(dc, font != nullptr
+        ? font : GetStockObject(DEFAULT_GUI_FONT));
+    RECT bounds{};
+    DrawTextW(dc, text, -1, &bounds, DT_CALCRECT | DT_SINGLELINE);
+    item.itemWidth = static_cast<UINT>(bounds.right - bounds.left + 16);
+    item.itemHeight = static_cast<UINT>(std::max<LONG>(
+        GetSystemMetrics(SM_CYMENU) - 1, bounds.bottom - bounds.top + 4));
+    SelectObject(dc, previous);
+    if (font != nullptr) DeleteObject(font);
+    ReleaseDC(window_, dc);
+    return true;
+}
+
+bool MainWindow::draw_menu_item(DRAWITEMSTRUCT& item) noexcept {
+    if (item.CtlType != ODT_MENU || !dark_theme_ ||
+        reinterpret_cast<HMENU>(item.hwndItem) != menu_bar_) return false;
+    const int saved = SaveDC(item.hDC);
+    IntersectClipRect(item.hDC, item.rcItem.left, item.rcItem.top,
+                      item.rcItem.right, item.rcItem.bottom);
+    const bool selected = (item.itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
+    SetDCBrushColor(item.hDC, selected ? RGB(65, 65, 68) : RGB(45, 45, 48));
+    FillRect(item.hDC, &item.rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, (item.itemState & (ODS_DISABLED | ODS_GRAYED)) != 0
+        ? RGB(140, 140, 140) : RGB(225, 225, 225));
+    HFONT font = create_menu_font();
+    SelectObject(item.hDC, font != nullptr ? font : GetStockObject(DEFAULT_GUI_FONT));
+    wchar_t text[128]{};
+    menu_label(menu_bar_, static_cast<UINT>(item.itemData), text);
+    RECT bounds = item.rcItem;
+    UINT flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if ((item.itemState & ODS_NOACCEL) != 0) flags |= DT_HIDEPREFIX;
+    DrawTextW(item.hDC, text, -1, &bounds, flags);
+    RestoreDC(item.hDC, saved);
+    if (font != nullptr) DeleteObject(font);
+    return true;
 }
 
 void MainWindow::update_menu_checks() noexcept {
