@@ -8,6 +8,7 @@ int main() {
     run_clipboard_text_tests();
     run_gap_buffer_tests();
     run_document_tests();
+    run_text_navigation_tests();
     run_roundtrip_tests();
     run_ini_env_highlight_tests();
     std::printf("%d checks, %d failures\n", mempad::tests::checks, mempad::tests::failures);

@@ -70,7 +70,7 @@ bool MainWindow::create(const int show_command,
                         const std::wstring& initial_path) noexcept {
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
-    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance_;
     window_class.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
@@ -171,6 +171,10 @@ bool MainWindow::create_menu_bar() noexcept {
     AppendMenuW(edit_menu, MF_STRING, command_paste, L"粘贴(&P)\tCtrl+V");
     AppendMenuW(edit_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(edit_menu, MF_STRING, command_select_all, L"全选(&A)\tCtrl+A");
+    AppendMenuW(edit_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(edit_menu, MF_STRING, command_find, L"查找(&F)...\tCtrl+F");
+    AppendMenuW(edit_menu, MF_STRING, command_find_next, L"查找下一个(&N)\tF3");
+    AppendMenuW(edit_menu, MF_STRING, command_find_previous, L"查找上一个(&P)\tShift+F3");
 
     AppendMenuW(tab_menu_, MF_STRING, command_tab_literal,
                 L"插入制表符（\\t，显示宽度 4）");
@@ -273,10 +277,14 @@ LRESULT MainWindow::dispatch(const UINT message, const WPARAM wparam,
     case WM_LBUTTONDOWN:
         editor_.mouse_down(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam),
                            (wparam & MK_SHIFT) != 0); return 0;
+    case WM_LBUTTONDBLCLK:
+        editor_.mouse_double_click(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)); return 0;
     case WM_MOUSEMOVE:
         editor_.mouse_move(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam),
                            (wparam & MK_LBUTTON) != 0); return 0;
     case WM_LBUTTONUP:
+        editor_.mouse_up(); return 0;
+    case WM_CAPTURECHANGED:
         editor_.mouse_up(); return 0;
     case WM_VSCROLL:
         editor_.vertical_scroll(wparam); return 0;
@@ -363,6 +371,9 @@ void MainWindow::on_command(const unsigned command) noexcept {
     case command_copy: editor_.copy_selection_to_clipboard(); break;
     case command_paste: editor_.paste_from_clipboard(); break;
     case command_select_all: editor_.select_all(); break;
+    case command_find: editor_.show_find(); break;
+    case command_find_next: editor_.find_next(); break;
+    case command_find_previous: editor_.find_next(true); break;
     case command_tab_literal:
         tab_mode_ = editor::TabMode::literal_tab;
         editor_.set_tab_mode(tab_mode_);

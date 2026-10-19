@@ -3,6 +3,7 @@
 #include "document/secure_document.h"
 #include "editor/line_index.h"
 #include "editor/selection.h"
+#include "editor/text_navigation.h"
 #include "security/secure_allocation.h"
 
 #include <cstddef>
@@ -41,7 +42,10 @@ public:
     void cut_selection_to_clipboard() noexcept;
     void paste_from_clipboard() noexcept;
     void select_all() noexcept;
+    void show_find() noexcept;
+    void find_next(bool backwards = false) noexcept;
     void mouse_down(int x, int y, bool shift) noexcept;
+    void mouse_double_click(int x, int y) noexcept;
     void mouse_move(int x, int y, bool left_button) noexcept;
     void mouse_up() noexcept;
     void vertical_scroll(WPARAM value) noexcept;
@@ -78,15 +82,29 @@ private:
     bool copy_selection_to_clipboard_impl() noexcept;
     void delete_selection() noexcept;
     void insert_text(std::span<const char16_t> text) noexcept;
-    std::size_t point_to_position(int x, int y) noexcept;
+    std::size_t point_to_position(int x, int y, bool nearest = true) noexcept;
+    int editor_bottom() const noexcept;
+    RECT find_input_rect() const noexcept;
+    void close_find(bool update_view = true) noexcept;
+    void refresh_find(std::size_t origin, bool backwards = false) noexcept;
+    void draw_find_bar(HDC dc) noexcept;
+    void update_find_caret() noexcept;
+    std::size_t find_position_for_pixel(int x) noexcept;
+    Selection& active_selection() noexcept;
+    const document::SecureGapBuffer& active_text() const noexcept;
     int pixel_for_position(HDC dc, std::size_t line,
                            std::size_t position) noexcept;
     std::size_t position_for_pixel(HDC dc, std::size_t line, int pixel,
                                    bool nearest, int& position_pixel) noexcept;
     int measure_text_range(HDC dc, std::size_t begin, std::size_t end) noexcept;
+    int measure_buffer_range(HDC dc, const document::SecureGapBuffer& text,
+                             std::size_t begin, std::size_t end) noexcept;
     int draw_text_range(HDC dc, std::size_t begin, std::size_t end,
                         int x, int y, COLORREF foreground,
                         COLORREF background) noexcept;
+    int draw_buffer_range(HDC dc, const document::SecureGapBuffer& text,
+                          std::size_t begin, std::size_t end, int x, int y,
+                          COLORREF foreground, COLORREF background) noexcept;
     void draw_line(HDC dc, std::size_t line, int y) noexcept;
     void notify_change() noexcept;
 
@@ -111,6 +129,16 @@ private:
     std::vector<WidthCheckpoint> width_checkpoints_{};
     std::vector<int> line_widths_{};
     Selection selection_{};
+    static constexpr std::size_t max_query_units = 1024U;
+    document::SecureGapBuffer find_query_{};
+    Selection find_selection_{};
+    SearchResult find_result_{};
+    bool find_visible_ = false;
+    bool find_focused_ = false;
+    bool suppress_tab_character_ = false;
+    int find_offset_ = 0;
+    bool word_selecting_ = false;
+    TextRange word_anchor_{};
     security::SecureAllocation scratch_{};
     security::SecureAllocation input_{};
     bool mouse_selecting_ = false;

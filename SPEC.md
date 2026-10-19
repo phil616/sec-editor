@@ -18,6 +18,10 @@
 
 横向滚动使用像素坐标。布局只缓存每 8192 个 UTF-16 单元的文档偏移与累计像素宽度；命中测试在相邻检查点之间二分查找，不在普通内存中缓存正文。滚动范围、光标、选区和鼠标命中共享同一套测量结果。
 
+查找路径：Ctrl+F / 编辑菜单 → 自绘查找栏 → 独立安全 Gap Buffer 关键词 → KMP 直接扫描正文 Gap Buffer → 匹配计数与正文选区。精确区分大小写，支持重叠匹配，单次扫描 O(正文 + 关键词)，辅助内存只含 O(关键词) 前缀长度。Enter / F3、Shift+Enter / Shift+F3 前后跳转并循环；Esc 清零关键词并关闭。查找栏复用正文的安全 scratch、双字体、标量导航和剪贴板流程；查找不改变文档 dirty 状态。
+
+双击路径：窗口类 CS_DBLCLKS → WM_LBUTTONDBLCLK → 字符命中（不取最近插入点）→ Unicode 类别连续区间双向扩展 → 选区高亮。策略参考 Scintilla 的 word / whitespace / punctuation / line-end 分类；Unicode 17.0 的 L*、M*、N*、Pc 合并为词字符，横向空白与标点/符号各自成块，换行不选中。按标量移动，保留代理对；这是代码/配置编辑器的分类策略，不实现词典分词或完整 UAX #29。类别表可通过 `scripts/generate-word-ranges.py` 重建，程序运行不访问网络。
+
 屏幕捕获保护路径：用户菜单开关 → 主顶层窗口 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE/WDA_NONE)`。状态只保存在 `MainWindow` 当前实例中，每次启动默认关闭，不读取或写入任何配置；API 失败时保持原状态并报告不含正文的 Windows 错误码。
 
 ## 组件
@@ -37,6 +41,7 @@
 UTF-16 文档   16 MiB
 单行           1 MiB UTF-16 code units
 绘制 scratch  64 KiB
+查找关键词    1024 UTF-16 code units（单行）
 崩溃清零槽位  16
 ```
 

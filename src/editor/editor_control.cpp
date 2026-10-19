@@ -182,12 +182,13 @@ template <typename Callback>
 void for_each_font_run(const document::SecureGapBuffer& text, HDC dc,
                        HFONT latin, HFONT cjk, std::size_t begin,
                        const std::size_t end, Callback&& callback) noexcept {
-    std::size_t position = begin;
-    while (position < end) {
+    const std::size_t bounded_end = std::min(end, text.size());
+    std::size_t position = std::min(begin, bounded_end);
+    while (position < bounded_end) {
         const bool cjk_run = scalar_uses_cjk_font(text, position);
         SelectObject(dc, cjk_run ? cjk : latin);
         std::size_t run_end = text.next_scalar(position);
-        while (run_end < end && scalar_uses_cjk_font(text, run_end) == cjk_run) {
+        while (run_end < bounded_end && scalar_uses_cjk_font(text, run_end) == cjk_run) {
             run_end = text.next_scalar(run_end);
         }
         callback(position, run_end);
@@ -250,6 +251,7 @@ bool EditorControl::initialize(HWND window) noexcept {
 }
 
 void EditorControl::shutdown() noexcept {
+    find_query_.clear();
     if (caret_shown_ && window_ != nullptr) HideCaret(window_);
     caret_shown_ = false;
     if (window_ != nullptr) DestroyCaret();
@@ -345,6 +347,10 @@ void EditorControl::apply_font_preset() noexcept {
 }
 
 void EditorControl::document_changed() noexcept {
+    // The document is already replaced/cleared; discard find state without
+    // measuring the old selection against the new text and stale line index.
+    close_find(false);
+    mouse_up();
     if (scratch_.valid()) security::secure_zero(scratch_.data(), scratch_.size());
     if (input_.valid()) security::secure_zero(input_.data(), input_.size());
     selection_.collapse(0);
@@ -419,7 +425,7 @@ void EditorControl::update_scrollbars() noexcept {
     vertical.nMax = static_cast<int>(std::min<std::size_t>(lines_.line_count() - 1U,
                                                            INT_MAX));
     vertical.nPage = static_cast<UINT>(
-        std::max(1, (client_height_ - status_height) / line_height_));
+        std::max(1, editor_bottom() / line_height_));
     vertical.nPos = static_cast<int>(std::min<std::size_t>(first_line_, INT_MAX));
     SetScrollInfo(window_, SB_VERT, &vertical, TRUE);
 
@@ -531,17 +537,23 @@ std::size_t EditorControl::position_for_pixel(HDC dc, const std::size_t line,
 
 int EditorControl::measure_text_range(HDC dc, std::size_t begin,
                                       const std::size_t end) noexcept {
+    return measure_buffer_range(dc, document_.text(), begin, end);
+}
+
+int EditorControl::measure_buffer_range(HDC dc,
+    const document::SecureGapBuffer& text, std::size_t begin,
+    const std::size_t end) noexcept {
     if (end <= begin || !scratch_.valid()) return 0;
     auto* buffer = reinterpret_cast<char16_t*>(scratch_.data());
     const std::size_t capacity = scratch_.size() / sizeof(char16_t);
     const std::size_t input_capacity = std::max<std::size_t>(1U, capacity / 4U);
     long long total = 0;
-    for_each_font_run(document_.text(), dc, font_, cjk_font_, begin, end,
+    for_each_font_run(text, dc, font_, cjk_font_, begin, end,
         [&](const std::size_t run_begin, const std::size_t run_end) {
             std::size_t position = run_begin;
             while (position < run_end) {
                 const std::size_t count = std::min(input_capacity, run_end - position);
-                if (!document_.text().copy_range(position, position + count,
+                if (!text.copy_range(position, position + count,
                                                  std::span<char16_t>(buffer, count))) break;
                 const std::size_t display_count = expand_tabs(buffer, count);
                 SIZE extent{};
@@ -559,6 +571,13 @@ int EditorControl::measure_text_range(HDC dc, std::size_t begin,
 int EditorControl::draw_text_range(HDC dc, std::size_t begin, const std::size_t end,
                                    int x, const int y, const COLORREF foreground,
                                    const COLORREF background) noexcept {
+    return draw_buffer_range(dc, document_.text(), begin, end, x, y,
+                             foreground, background);
+}
+
+int EditorControl::draw_buffer_range(HDC dc,
+    const document::SecureGapBuffer& text, std::size_t begin, const std::size_t end,
+    int x, const int y, const COLORREF foreground, const COLORREF background) noexcept {
     if (end <= begin || !scratch_.valid()) return 0;
     auto* buffer = reinterpret_cast<char16_t*>(scratch_.data());
     const std::size_t capacity = scratch_.size() / sizeof(char16_t);
@@ -566,12 +585,12 @@ int EditorControl::draw_text_range(HDC dc, std::size_t begin, const std::size_t 
     int total = 0;
     SetTextColor(dc, foreground);
     SetBkColor(dc, background);
-    for_each_font_run(document_.text(), dc, font_, cjk_font_, begin, end,
+    for_each_font_run(text, dc, font_, cjk_font_, begin, end,
         [&](const std::size_t run_begin, const std::size_t run_end) {
             std::size_t position = run_begin;
             while (position < run_end) {
                 const std::size_t count = std::min(input_capacity, run_end - position);
-                if (!document_.text().copy_range(position, position + count,
+                if (!text.copy_range(position, position + count,
                                                  std::span<char16_t>(buffer, count))) break;
                 const std::size_t display_count = expand_tabs(buffer, count);
                 SIZE extent{};
@@ -672,13 +691,15 @@ void EditorControl::paint() noexcept {
     GetClientRect(window_, &client);
     const HGDIOBJ previous = SelectObject(dc, font_);
     SetBkMode(dc, OPAQUE);
-    const int editor_bottom = static_cast<int>(std::max<LONG>(0, client.bottom - status_height));
+    const int content_bottom = editor_bottom();
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, 0, 0, client_width_, content_bottom);
     const std::size_t visible_lines = static_cast<std::size_t>(
-        std::max(1, (editor_bottom + line_height_ - 1) / line_height_));
+        std::max(1, (content_bottom + line_height_ - 1) / line_height_));
     HBRUSH background = CreateSolidBrush(editor_background(dark_theme_));
     for (std::size_t row = 0; row < visible_lines; ++row) {
         const int y = static_cast<int>(row) * line_height_;
-        const int bottom = std::min(editor_bottom, y + line_height_);
+        const int bottom = std::min(content_bottom, y + line_height_);
         if (bottom <= paint.rcPaint.top || y >= paint.rcPaint.bottom) continue;
         if (first_line_ + row < lines_.line_count()) {
             draw_line(dc, first_line_ + row, y);
@@ -688,8 +709,11 @@ void EditorControl::paint() noexcept {
         }
     }
     DeleteObject(background);
+    RestoreDC(dc, saved);
+    if (find_visible_) draw_find_bar(dc);
 
-    RECT status{0, editor_bottom, client.right, client.bottom};
+    const int status_top = std::max(0, client_height_ - status_height);
+    RECT status{0, status_top, client.right, client.bottom};
     HBRUSH status_brush = CreateSolidBrush(status_background(dark_theme_));
     FillRect(dc, &status, status_brush);
     DeleteObject(status_brush);
@@ -697,8 +721,8 @@ void EditorControl::paint() noexcept {
     SetBkMode(dc, TRANSPARENT);
     HPEN status_separator = CreatePen(PS_SOLID, 1, status_border(dark_theme_));
     const HGDIOBJ previous_pen = SelectObject(dc, status_separator);
-    MoveToEx(dc, 0, editor_bottom, nullptr);
-    LineTo(dc, client.right, editor_bottom);
+    MoveToEx(dc, 0, status_top, nullptr);
+    LineTo(dc, client.right, status_top);
     SelectObject(dc, previous_pen);
     DeleteObject(status_separator);
     const std::size_t line = lines_.line_for_position(selection_.caret());
@@ -712,7 +736,7 @@ void EditorControl::paint() noexcept {
                   document_.dirty() ? L"已修改" : L"已保存",
                   document_.secure() ? L"是" : L"无文档");
     SetTextColor(dc, status_text_color(dark_theme_));
-    ExtTextOutW(dc, 8, editor_bottom + 5, ETO_CLIPPED, &status, status_text,
+    ExtTextOutW(dc, 8, status_top + 5, ETO_CLIPPED, &status, status_text,
                 static_cast<UINT>(std::wcslen(status_text)), nullptr);
     SelectObject(dc, previous);
     EndPaint(window_, &paint);
@@ -721,6 +745,10 @@ void EditorControl::paint() noexcept {
 void EditorControl::update_caret() noexcept {
     if (!initialized_ || window_ == nullptr || !document_.open()) {
         focus(false);
+        return;
+    }
+    if (find_focused_) {
+        update_find_caret();
         return;
     }
     const std::size_t line = lines_.line_for_position(selection_.caret());
@@ -753,7 +781,7 @@ void EditorControl::focus(const bool gained) noexcept {
 void EditorControl::ensure_caret_visible() noexcept {
     const std::size_t line = lines_.line_for_position(selection_.caret());
     const std::size_t page_lines = static_cast<std::size_t>(
-        std::max(1, (client_height_ - status_height) / line_height_));
+        std::max(1, editor_bottom() / line_height_));
     if (line < first_line_) first_line_ = line;
     else if (line >= first_line_ + page_lines) first_line_ = line - page_lines + 1U;
 
@@ -798,6 +826,10 @@ void EditorControl::move_vertical(const int line_delta, const bool extend) noexc
 }
 
 void EditorControl::delete_selection() noexcept {
+    if (find_focused_) {
+        insert_text({});
+        return;
+    }
     if (!selection_.empty() && document_.erase(selection_.begin(), selection_.end())) {
         selection_.collapse(selection_.begin());
         rebuild();
@@ -806,6 +838,27 @@ void EditorControl::delete_selection() noexcept {
 }
 
 void EditorControl::insert_text(const std::span<const char16_t> text) noexcept {
+    if (find_focused_) {
+        const std::size_t begin = find_selection_.begin();
+        const std::size_t end = find_selection_.end();
+        if (text.size() > max_query_units - (find_query_.size() - (end - begin)) ||
+            std::any_of(text.begin(), text.end(), [](const char16_t value) {
+                return value < u' ' || value == 0x7FU || value == 0x85U ||
+                       value == 0x2028U || value == 0x2029U;
+            })) {
+            MessageBoxW(window_, L"查找文本须为单行，且不超过 1024 个 UTF-16 单元。",
+                        L"安全编辑器", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        if (!find_query_.replace(begin, end, text)) {
+            MessageBoxW(window_, L"无法为查找文本分配安全内存。", L"安全编辑器",
+                        MB_OK | MB_ICONERROR);
+            return;
+        }
+        find_selection_.collapse(begin + text.size());
+        refresh_find(selection_.begin());
+        return;
+    }
     const std::size_t begin = selection_.begin();
     const std::size_t end = selection_.end();
     if (document_.replace(begin, end, text)) {
@@ -819,13 +872,15 @@ void EditorControl::insert_text(const std::span<const char16_t> text) noexcept {
 }
 
 bool EditorControl::copy_selection_to_clipboard_impl() noexcept {
-    if (!document_.open() || selection_.empty()) return false;
+    const Selection& selected = active_selection();
+    const auto& text = active_text();
+    if (!document_.open() || selected.empty()) return false;
 
-    const std::size_t begin = selection_.begin();
-    const std::size_t end = selection_.end();
+    const std::size_t begin = selected.begin();
+    const std::size_t end = selected.end();
     std::size_t output_units = 1U; // NUL terminator
     for (std::size_t position = begin; position < end; ++position) {
-        const std::size_t added = document_.text().at(position) == u'\n' ? 2U : 1U;
+        const std::size_t added = text.at(position) == u'\n' ? 2U : 1U;
         if (output_units > std::numeric_limits<std::size_t>::max() - added) {
             MessageBoxW(window_, L"无法复制到剪贴板。", L"安全编辑器",
                         MB_OK | MB_ICONERROR);
@@ -857,7 +912,7 @@ bool EditorControl::copy_selection_to_clipboard_impl() noexcept {
 
     std::size_t write = 0;
     for (std::size_t position = begin; position < end; ++position) {
-        const char16_t value = document_.text().at(position);
+        const char16_t value = text.at(position);
         if (value == u'\n') output[write++] = L'\r';
         output[write++] = static_cast<wchar_t>(value);
     }
@@ -909,8 +964,189 @@ void EditorControl::paste_from_clipboard() noexcept {
 
 void EditorControl::select_all() noexcept {
     if (!document_.open()) return;
-    selection_.set(0, document_.text().size());
+    active_selection().set(0, active_text().size());
     ensure_caret_visible();
+}
+
+Selection& EditorControl::active_selection() noexcept {
+    return find_focused_ ? find_selection_ : selection_;
+}
+
+const document::SecureGapBuffer& EditorControl::active_text() const noexcept {
+    return find_focused_ ? find_query_ : document_.text();
+}
+
+int EditorControl::editor_bottom() const noexcept {
+    const int find_height = find_visible_ ? 2 * line_height_ + 16 : 0;
+    return std::max(0, client_height_ - status_height - find_height);
+}
+
+RECT EditorControl::find_input_rect() const noexcept {
+    const int left = std::min(160, std::max(0, client_width_ / 3));
+    return {left, editor_bottom() + 4, std::max(left, client_width_ - 8),
+            editor_bottom() + line_height_ + 8};
+}
+
+void EditorControl::show_find() noexcept {
+    if (!document_.open()) return;
+    mouse_up();
+    security::secure_zero(input_.data(), input_.size());
+    // Seed from a short single-line selection using only the secure scratch.
+    const std::size_t units = selection_.end() - selection_.begin();
+    bool seeded = false;
+    if (!find_focused_ && units != 0 && units <= max_query_units) {
+        auto* buffer = reinterpret_cast<char16_t*>(scratch_.data());
+        const std::span<char16_t> text(buffer, units);
+        if (document_.text().copy_range(selection_.begin(), selection_.end(), text) &&
+            std::none_of(text.begin(), text.end(), [](const char16_t value) {
+                return value < u' ' || value == 0x7FU || value == 0x85U ||
+                       value == 0x2028U || value == 0x2029U;
+            })) {
+            if (!find_query_.assign(text)) {
+                security::secure_zero(buffer, units * sizeof(char16_t));
+                close_find();
+                MessageBoxW(window_, L"无法为查找文本分配安全内存。", L"安全编辑器",
+                            MB_OK | MB_ICONERROR);
+                return;
+            }
+            seeded = true;
+        }
+        security::secure_zero(buffer, units * sizeof(char16_t));
+    }
+    find_visible_ = true;
+    find_focused_ = true;
+    find_selection_.set(0, find_query_.size());
+    SetFocus(window_);
+    if (seeded || !find_query_.empty()) refresh_find(selection_.begin());
+    else ensure_caret_visible();
+}
+
+void EditorControl::close_find(const bool update_view) noexcept {
+    const bool was_visible = find_visible_;
+    if (was_visible) mouse_up();
+    find_query_.clear();
+    find_selection_.collapse(0);
+    find_result_ = {};
+    find_visible_ = false;
+    find_focused_ = false;
+    find_offset_ = 0;
+    suppress_tab_character_ = false;
+    if (input_.valid()) security::secure_zero(input_.data(), input_.size());
+    if (update_view && was_visible && initialized_ && window_ != nullptr) ensure_caret_visible();
+}
+
+void EditorControl::refresh_find(const std::size_t origin, const bool backwards) noexcept {
+    find_result_ = find_literal(document_.text(), find_query_, origin, backwards);
+    if (find_result_.count != 0) {
+        selection_.set(find_result_.range.begin, find_result_.range.end);
+        const std::size_t line = lines_.line_for_position(selection_.caret());
+        preferred_column_ = selection_.caret() - lines_.line_start(line);
+    }
+    ensure_caret_visible();
+}
+
+void EditorControl::find_next(const bool backwards) noexcept {
+    if (!document_.open()) return;
+    if (!find_visible_ || find_query_.empty()) { show_find(); return; }
+    // Advancing one scalar also permits overlapping matches. size()+1 forces
+    // wrap when the caret is already at EOF.
+    const std::size_t origin = backwards ? selection_.begin()
+        : (selection_.begin() < document_.text().size()
+            ? document_.text().next_scalar(selection_.begin())
+            : document_.text().size() + 1U);
+    refresh_find(origin, backwards);
+}
+
+void EditorControl::update_find_caret() noexcept {
+    const RECT input = find_input_rect();
+    HDC dc = GetDC(window_);
+    if (dc == nullptr) return;
+    const int saved = SaveDC(dc);
+    const int pixels = measure_buffer_range(dc, find_query_, 0, find_selection_.caret());
+    const int available = std::max(1L, input.right - input.left - 8);
+    if (pixels < find_offset_) find_offset_ = pixels;
+    else if (pixels > find_offset_ + available) find_offset_ = pixels - available;
+    SetCaretPos(input.left + 4 + pixels - find_offset_, input.top + 2);
+    RestoreDC(dc, saved);
+    ReleaseDC(window_, dc);
+}
+
+std::size_t EditorControl::find_position_for_pixel(const int x) noexcept {
+    HDC dc = GetDC(window_);
+    if (dc == nullptr) return 0;
+    const int saved = SaveDC(dc);
+    const int target = std::max(0L, x - find_input_rect().left - 4 + find_offset_);
+    std::size_t position = 0;
+    int pixels = 0;
+    while (position < find_query_.size()) {
+        const std::size_t next = find_query_.next_scalar(position);
+        const int advance = measure_buffer_range(dc, find_query_, position, next);
+        if (target < pixels + (advance + 1) / 2) break;
+        pixels += advance;
+        position = next;
+    }
+    RestoreDC(dc, saved);
+    ReleaseDC(window_, dc);
+    return position;
+}
+
+void EditorControl::draw_find_bar(HDC dc) noexcept {
+    const int saved = SaveDC(dc);
+    const RECT bar{0, editor_bottom(), client_width_,
+                   std::max(0, client_height_ - status_height)};
+    IntersectClipRect(dc, bar.left, bar.top, bar.right, bar.bottom);
+    HBRUSH background = CreateSolidBrush(status_background(dark_theme_));
+    FillRect(dc, &bar, background);
+    DeleteObject(background);
+    const RECT input = find_input_rect();
+    SelectObject(dc, ui_font_);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, status_text_color(dark_theme_));
+    RECT label{8, input.top, input.left - 4, input.bottom};
+    DrawTextW(dc, L"查找（区分大小写）", -1, &label,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    HBRUSH field = CreateSolidBrush(editor_background(dark_theme_));
+    FillRect(dc, &input, field);
+    DeleteObject(field);
+    HBRUSH border = CreateSolidBrush(status_border(dark_theme_));
+    FrameRect(dc, &input, border);
+    DeleteObject(border);
+    const int field_saved = SaveDC(dc);
+    IntersectClipRect(dc, input.left + 2, input.top + 1, input.right - 2, input.bottom - 1);
+    SetBkMode(dc, OPAQUE);
+    const std::size_t begin = find_selection_.begin();
+    const std::size_t end = find_selection_.end();
+    int x = input.left + 4 - find_offset_;
+    x += draw_buffer_range(dc, find_query_, 0, begin, x, input.top + 2,
+                           editor_text(dark_theme_), editor_background(dark_theme_));
+    x += draw_buffer_range(dc, find_query_, begin, end, x, input.top + 2,
+                           selection_text(dark_theme_), selection_background(dark_theme_));
+    draw_buffer_range(dc, find_query_, end, find_query_.size(), x, input.top + 2,
+                       editor_text(dark_theme_), editor_background(dark_theme_));
+    RestoreDC(dc, field_saved);
+    wchar_t result[96]{};
+    if (find_query_.empty()) {
+        std::swprintf(result, std::size(result), L"输入关键词；Esc 关闭");
+    } else if (find_result_.count == 0) {
+        std::swprintf(result, std::size(result), L"未找到匹配项");
+    } else if (find_result_.ordinal == 0) {
+        std::swprintf(result, std::size(result), L"共 %zu 项", find_result_.count);
+    } else {
+        std::swprintf(result, std::size(result), L"%zu / %zu%ls",
+                      find_result_.ordinal, find_result_.count,
+                      find_result_.wrapped ? L"（已循环）" : L"");
+    }
+    const int button_width = std::min(88, std::max(1, client_width_ / 4));
+    RECT result_area{8, input.bottom + 2, client_width_ - 3 * button_width,
+                     bar.bottom - 2};
+    DrawTextW(dc, result, -1, &result_area, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    const wchar_t* buttons[]{L"上一个 ↑", L"下一个 ↓", L"关闭 ×"};
+    for (int index = 0; index < 3; ++index) {
+        RECT button{client_width_ - (3 - index) * button_width, input.bottom + 2,
+                     client_width_ - (2 - index) * button_width - 4, bar.bottom - 2};
+        DrawTextW(dc, buttons[index], -1, &button, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    }
+    RestoreDC(dc, saved);
 }
 
 void EditorControl::key_down(const WPARAM key, const bool shift,
@@ -918,12 +1154,48 @@ void EditorControl::key_down(const WPARAM key, const bool shift,
     if (!document_.open()) return;
     if (control) {
         switch (key) {
+        case 'F': show_find(); return;
         case 'A': select_all(); return;
         case 'C': copy_selection_to_clipboard(); return;
         case 'V': paste_from_clipboard(); return;
         case 'X': cut_selection_to_clipboard(); return;
         default: break;
         }
+    }
+    if (key == VK_F3) { find_next(shift); return; }
+    if (key == VK_ESCAPE && find_visible_) { close_find(); return; }
+    if (find_focused_) {
+        std::size_t target = find_selection_.caret();
+        switch (key) {
+        case VK_RETURN: find_next(shift); return;
+        case VK_TAB:
+            find_focused_ = false;
+            suppress_tab_character_ = true;
+            security::secure_zero(input_.data(), input_.size());
+            ensure_caret_visible();
+            return;
+        case VK_LEFT:
+            target = !shift && !find_selection_.empty() ? find_selection_.begin()
+                : find_query_.previous_scalar(target);
+            break;
+        case VK_RIGHT:
+            target = !shift && !find_selection_.empty() ? find_selection_.end()
+                : find_query_.next_scalar(target);
+            break;
+        case VK_HOME: target = 0; break;
+        case VK_END: target = find_query_.size(); break;
+        case VK_BACK:
+            if (find_selection_.empty()) find_selection_.extend(find_query_.previous_scalar(target));
+            delete_selection(); return;
+        case VK_DELETE:
+            if (find_selection_.empty()) find_selection_.extend(find_query_.next_scalar(target));
+            delete_selection(); return;
+        default: return;
+        }
+        if (shift) find_selection_.extend(target); else find_selection_.collapse(target);
+        update_caret();
+        InvalidateRect(window_, nullptr, FALSE);
+        return;
     }
     std::size_t target = selection_.caret();
     switch (key) {
@@ -944,10 +1216,10 @@ void EditorControl::key_down(const WPARAM key, const bool shift,
     case VK_END:
         move_to(lines_.line_end(lines_.line_for_position(target), document_.text()), shift); break;
     case VK_PRIOR:
-        move_vertical(-std::max(1, (client_height_ - status_height) /
+        move_vertical(-std::max(1, editor_bottom() /
                                    line_height_), shift); break;
     case VK_NEXT:
-        move_vertical(std::max(1, (client_height_ - status_height) /
+        move_vertical(std::max(1, editor_bottom() /
                                   line_height_), shift); break;
     case VK_BACK:
         if (!selection_.empty()) delete_selection();
@@ -971,6 +1243,14 @@ void EditorControl::key_down(const WPARAM key, const bool shift,
 
 void EditorControl::character(const char16_t value) noexcept {
     if (!document_.open()) return;
+    if (value == u'\t' && suppress_tab_character_) {
+        suppress_tab_character_ = false;
+        return;
+    }
+    suppress_tab_character_ = false;
+    // Enter/Tab are handled by WM_KEYDOWN while the find input is active.
+    if (find_focused_ && (value == u'\r' || value == u'\t')) return;
+    if (value == u'\t' && (GetKeyState(VK_CONTROL) & 0x8000) != 0) return;
     auto* pending = reinterpret_cast<char16_t*>(input_.data());
     if (document::is_high_surrogate(value)) {
         pending[0] = value;
@@ -996,7 +1276,8 @@ void EditorControl::character(const char16_t value) noexcept {
     }
 }
 
-std::size_t EditorControl::point_to_position(const int x, const int y) noexcept {
+std::size_t EditorControl::point_to_position(const int x, const int y,
+                                            const bool nearest) noexcept {
     const std::size_t line = std::min(first_line_ + static_cast<std::size_t>(
         std::max(0, y) / line_height_), lines_.line_count() - 1U);
     HDC dc = GetDC(window_);
@@ -1005,32 +1286,99 @@ std::size_t EditorControl::point_to_position(const int x, const int y) noexcept 
     int position_pixel = 0;
     const int target = horizontal_offset_ + std::max(0, x - 4);
     const std::size_t position = position_for_pixel(
-        dc, line, target, true, position_pixel);
+        dc, line, target, nearest, position_pixel);
     SelectObject(dc, previous);
     ReleaseDC(window_, dc);
     return position;
 }
 
 void EditorControl::mouse_down(const int x, const int y, const bool shift) noexcept {
-    if (!document_.open() || y < 0 || y >= client_height_ - status_height) return;
+    if (!document_.open() || y < 0) return;
+    if (find_visible_ && y >= editor_bottom()) {
+        const RECT input = find_input_rect();
+        if (y >= input.top && y < input.bottom && x >= input.left && x < input.right) {
+            SetFocus(window_);
+            find_focused_ = true;
+            security::secure_zero(input_.data(), input_.size());
+            const std::size_t position = find_position_for_pixel(x);
+            if (shift) find_selection_.extend(position); else find_selection_.collapse(position);
+            mouse_selecting_ = true;
+            word_selecting_ = false;
+            SetCapture(window_);
+            update_caret();
+            InvalidateRect(window_, nullptr, FALSE);
+        } else if (y >= input.bottom && y < client_height_ - status_height) {
+            const int button_width = std::min(88, std::max(1, client_width_ / 4));
+            if (x >= client_width_ - button_width) close_find();
+            else if (x >= client_width_ - button_width * 2) find_next();
+            else if (x >= client_width_ - button_width * 3) find_next(true);
+        }
+        return;
+    }
+    if (y >= editor_bottom()) return;
     SetFocus(window_);
+    find_focused_ = false;
+    security::secure_zero(input_.data(), input_.size());
     const std::size_t position = point_to_position(x, y);
     if (shift) selection_.extend(position); else selection_.collapse(position);
     mouse_selecting_ = true;
+    word_selecting_ = false;
     SetCapture(window_);
     ensure_caret_visible();
 }
 
 void EditorControl::mouse_move(const int x, const int y, const bool left_button) noexcept {
     if (mouse_selecting_ && left_button) {
-        selection_.extend(point_to_position(x, y));
+        if (find_focused_) {
+            find_selection_.extend(find_position_for_pixel(x));
+            update_caret();
+            InvalidateRect(window_, nullptr, FALSE);
+            return;
+        }
+        if (word_selecting_) {
+            const TextRange word = word_at(document_.text(), point_to_position(x, y, false));
+            if (word.begin < word_anchor_.begin) selection_.set(word_anchor_.end, word.begin);
+            else selection_.set(word_anchor_.begin, std::max(word_anchor_.end, word.end));
+        } else {
+            selection_.extend(point_to_position(x, y));
+        }
         ensure_caret_visible();
     }
 }
 
 void EditorControl::mouse_up() noexcept {
-    if (mouse_selecting_) ReleaseCapture();
+    const bool captured = mouse_selecting_ && GetCapture() == window_;
     mouse_selecting_ = false;
+    word_selecting_ = false;
+    if (captured) ReleaseCapture();
+}
+
+void EditorControl::mouse_double_click(const int x, const int y) noexcept {
+    if (!document_.open()) return;
+    if (find_visible_ && y >= editor_bottom()) {
+        const RECT input = find_input_rect();
+        if (y >= input.top && y < input.bottom && x >= input.left && x < input.right) {
+            find_focused_ = true;
+            select_all();
+        }
+        return;
+    }
+    if (x < 4 || y < 0 || y >= editor_bottom()) return;
+    const std::size_t line = first_line_ + static_cast<std::size_t>(y / line_height_);
+    if (line >= lines_.line_count()) return;
+    const std::size_t position = point_to_position(x, y, false);
+    // Clicking in the blank area after a line does not select its last word.
+    if (position >= lines_.line_end(line, document_.text())) return;
+    SetFocus(window_);
+    find_focused_ = false;
+    security::secure_zero(input_.data(), input_.size());
+    word_anchor_ = word_at(document_.text(), position);
+    selection_.set(word_anchor_.begin, word_anchor_.end);
+    preferred_column_ = selection_.caret() - lines_.line_start(line);
+    mouse_selecting_ = true;
+    word_selecting_ = true;
+    SetCapture(window_);
+    ensure_caret_visible();
 }
 
 void EditorControl::vertical_scroll(const WPARAM value) noexcept {
@@ -1114,6 +1462,11 @@ void EditorControl::status_changed() noexcept {
 }
 
 void EditorControl::notify_change() noexcept {
+    if (find_visible_) {
+        find_result_ = find_literal(document_.text(), find_query_, selection_.begin(), false);
+        if (find_result_.range.begin != selection_.begin() ||
+            find_result_.range.end != selection_.end()) find_result_.ordinal = 0;
+    }
     const std::size_t line = lines_.line_for_position(selection_.caret());
     preferred_column_ = selection_.caret() - lines_.line_start(line);
     ensure_caret_visible();
