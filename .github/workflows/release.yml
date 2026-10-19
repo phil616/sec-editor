@@ -60,7 +60,7 @@ jobs:
           (
             cd dist
             cmake -E tar cf "${archive}" --format=zip -- \
-              "mempad.exe" README.md SECURITY.md
+              "mempad.exe" README.md SECURITY.md UNICODE-LICENSE.txt
             sha256sum "${archive}" > "${checksum}"
           )
           echo "archive=dist/${archive}" >> "${GITHUB_OUTPUT}"
